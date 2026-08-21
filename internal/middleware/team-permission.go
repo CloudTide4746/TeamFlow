@@ -10,6 +10,7 @@ import (
 
 func TeamPermission(permSvc service.PermissionService, reqTeamRole string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		//从上下文获取用户ID和团队ID
 		userID, exists := c.Get(ContextKeyUserID)
 		if !exists {
 			unauthorized := apperr.ErrUnauthorized
@@ -23,7 +24,7 @@ func TeamPermission(permSvc service.PermissionService, reqTeamRole string) gin.H
 			_ = c.Error(unauthorized)
 			return
 		}
-		actualRole, ok, err := permSvc.CheckTeamPermisson(userID, teamID, reqTeamRole)
+		actualRole, ok, err := permSvc.CheckTeamPermisson(userID.(uint), uint(teamID), reqTeamRole)
 		if err != nil {
 			unauthorized := apperr.ErrServerError
 			_ = c.Error(unauthorized)
@@ -37,5 +38,4 @@ func TeamPermission(permSvc service.PermissionService, reqTeamRole string) gin.H
 		c.Set(ContextKeyUserID, actualRole)
 		c.Next()
 	}
-
 }

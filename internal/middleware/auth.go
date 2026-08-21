@@ -13,21 +13,21 @@ func JWTAuth() gin.HandlerFunc {
 		// 从请求头中获取token
 		token := c.GetHeader("Authorization")
 		if token == "" {
-			response.Unauthorized(c, "未授权")
+			response.Unauthorized(c)
 			c.Abort()
 			return
 		}
 		// 验证token
 		parts := strings.SplitN(token, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
-			response.Unauthorized(c, "token格式错误")
+			response.Unauthorized(c)
 			c.Abort()
 			return
 		}
 		// 验证token
 		claims, err := jwt.ParseToken(parts[1])
 		if err != nil {
-			response.Unauthorized(c, "token验证失败")
+			response.Unauthorized(c)
 			c.Abort()
 			return
 		}
