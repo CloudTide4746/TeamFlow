@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"math/rand/v2"
 	"time"
 
 	"teamflow/internal/database"
@@ -39,4 +40,13 @@ func GetCache(key string, out interface{}) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func SetCacheWithJitter(key string, value any, baseTTL, maxJitter time.Duration) error {
+	if baseTTL <= 0 || maxJitter <= 0 {
+		return SetCache(key, value, baseTTL)
+	}
+
+	ttl := baseTTL + time.Duration(rand.Int64N(int64(maxJitter)))
+	return SetCache(key, value, ttl)
 }

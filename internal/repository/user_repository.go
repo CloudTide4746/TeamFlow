@@ -1,6 +1,10 @@
 package repository
 
 import (
+	"errors"
+	"time"
+
+	"teamflow/internal/cache"
 	"teamflow/internal/model"
 
 	"gorm.io/gorm"
@@ -19,16 +23,37 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 
 // GetByID 根据主键 ID 查询用户
 func (r *UserRepository) GetByID(id uint) (*model.User, error) {
+	// cached：优先读缓存，未命中则查库
+	userCache := &cache.UserCache{}
 	var user model.User
-	err := r.db.First(&user, id).Error
+	ok, err := userCache.GetUser(id, &user)
 	if err != nil {
+		// 防止缓存穿透
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
 		return nil, err
 	}
+	if ok {
+		return &user, nil
+	}
+	if err := r.db.First(&user, id).Error; err != nil {
+		// 防止缓存穿透
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 缓存穿透，返回空值
+			userCache.SetUser(id, nil, 5*time.Minute)
+			return nil, nil
+		}
+		return nil, err
+	}
+	// 缓存用户信息
+	userCache.SetUser(id, user, 5*time.Minute)
 	return &user, nil
 }
 
 // GetByEmail 根据邮箱查询用户
 func (r *UserRepository) GetByEmail(email string) (*model.User, error) {
+
 	var user model.User
 	err := r.db.Where("email = ?", email).First(&user).Error
 	if err != nil {

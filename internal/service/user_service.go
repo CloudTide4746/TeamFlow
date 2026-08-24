@@ -104,16 +104,17 @@ func (s *UserService) CreateUser(req *request.RegisterRequest) (*model.User, err
 }
 
 // UpdateUser 全量更新用户信息，密码由 BeforeUpdate hook 自动加密
-func (s *UserService) UpdateUser(id uint, username, email, password, avatar, nickname string, status int8) (*model.User, error) {
-	var user model.User
-	if err := storage.DB.First(&user, id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("用户不存在")
-		}
+func (s *UserService) UpdateUser(id uint, username, email, currentPassword, avatar, nickname string, status int8) (*model.User, error) {
+	// GetByID 内部负责“先缓存、未命中查库、回填 user:{id}”
+	user, err := s.userRepo.GetByID(id)
+	if err != nil {
 		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
-	//检验密码是否正确
-	if err := utils.CheckPassword(user.Password, password); err != nil {
+	if user == nil {
+		return nil, fmt.Errorf("用户不存在")
+	}
+
+	if err := utils.CheckPassword(user.Password, currentPassword); err != nil {
 		return nil, fmt.Errorf("密码错误")
 	}
 
@@ -123,18 +124,16 @@ func (s *UserService) UpdateUser(id uint, username, email, password, avatar, nic
 	user.Nickname = nickname
 	user.Status = status
 
-	// 仅当传入非空密码时才更新密码字段
-	if password != "" {
-		user.Password = password
-	}
-
-	if err := storage.DB.Save(&user).Error; err != nil {
-		if isMySQLDuplicate(err) {
-			return nil, fmt.Errorf("用户名或邮箱已存在")
-		}
+	if err := storage.DB.Save(user).Error; err != nil {
 		return nil, fmt.Errorf("更新用户失败: %w", err)
 	}
-	return &user, nil
+
+	// 必须删 user:{id}，由 UserCache 内部统一组装键
+	if err := (&cache.UserCache{}).DeleteUser(id); err != nil {
+		// DB 已成功；这里更适合记录错误并异步重试，而非告诉客户端“更新失败”
+	}
+
+	return user, nil
 }
 
 // DeleteUser 软删除用户，GORM 自动设置 deleted_at
@@ -145,6 +144,11 @@ func (s *UserService) DeleteUser(id uint) error {
 	}
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("用户不存在")
+	}
+	// 缓存更新
+	userCache := &cache.UserCache{}
+	if err := userCache.DeleteUser(id); err != nil {
+		return fmt.Errorf("删除缓存失败: %w", err)
 	}
 	return nil
 }
