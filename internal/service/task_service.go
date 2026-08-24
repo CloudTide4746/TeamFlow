@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"teamflow/internal/cache"
 	"teamflow/internal/model"
 	"teamflow/internal/repository"
@@ -42,6 +43,7 @@ type TaskService interface {
 type taskService struct {
 	repo     repository.TaskRepository
 	notifier NotificationService
+	mu       sync.Mutex
 }
 
 type taskListCacheValue struct {
@@ -104,6 +106,7 @@ func (s *taskService) GetTask(id, operatorID uint) (*model.Task, error) {
 }
 
 func (s *taskService) GetTaskList(projectID, operatorID uint, page, size int) ([]*model.Task, int64, error) {
+
 	if projectID == 0 {
 		return nil, 0, fmt.Errorf("%w: project_id is required", ErrInvalidTask)
 	}
@@ -119,15 +122,34 @@ func (s *taskService) GetTaskList(projectID, operatorID uint, page, size int) ([
 	if size > 100 {
 		size = 100
 	}
+
+	// 防止缓存击穿
+	// 	1.请求查redis，没查到，如果查到，命中
 	cacheKey := cache.TaskListKey(projectID, page, size)
 	var cached taskListCacheValue
 	if ok, _ := cache.GetResourceCache(cacheKey, &cached); ok {
 		return cached.Tasks, cached.Total, nil
 	}
+
+	// 2.抢锁
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 3.抢到锁之后，再查一遍redis，如果有直接命中
+
+	var cached2 taskListCacheValue
+	if ok, _ := cache.GetResourceCache(cacheKey, &cached2); ok {
+		return cached2.Tasks, cached2.Total, nil
+	}
+
+	// 4.查数据库
 	tasks, total, err := s.repo.List(projectID, page, size)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list tasks: %w", err)
 	}
+
+	// 5.写redis
+
 	_ = cache.SetListCache(cacheKey, taskListCacheValue{Tasks: tasks, Total: total})
 	return tasks, total, nil
 }
