@@ -33,7 +33,7 @@ func ProjectPermissionMiddleware(permSvc service.PermissionService, requiredRole
 			return
 		}
 
-		actualRole, ok, err := permSvc.CheckProjectPermisson(uint(userID.(uint)), uint(projectID), requiredRole)
+		actualRole, ok, err := permSvc.CheckProjectPermission(uint(userID.(uint)), uint(projectID), requiredRole)
 		if err != nil {
 			err := apperr.ErrServerError
 			c.Error(err)

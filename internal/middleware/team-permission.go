@@ -24,7 +24,7 @@ func TeamPermission(permSvc service.PermissionService, reqTeamRole string) gin.H
 			_ = c.Error(unauthorized)
 			return
 		}
-		actualRole, ok, err := permSvc.CheckTeamPermisson(userID.(uint), uint(teamID), reqTeamRole)
+		actualRole, ok, err := permSvc.CheckTeamPermission(userID.(uint), uint(teamID), reqTeamRole)
 		if err != nil {
 			unauthorized := apperr.ErrServerError
 			_ = c.Error(unauthorized)

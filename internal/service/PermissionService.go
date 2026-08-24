@@ -12,15 +12,15 @@ import (
 type PermissionService struct {
 }
 type ProjectPermissionService interface {
-	CheckTeamPermisson(userID uint, teamID uint, reqTeamRole string) (string, bool, error)
-	CheckProjectPermisson(userID uint, projectID uint, reqProjectRole string) (string, bool, error)
+	CheckTeamPermission(userID uint, teamID uint, reqTeamRole string) (string, bool, error)
+	CheckProjectPermission(userID uint, projectID uint, reqProjectRole string) (string, bool, error)
 }
 
 func NewProjectPermissionService() *PermissionService {
 	return &PermissionService{}
 }
 
-func (s *PermissionService) CheckTeamPermisson(userID uint, teamID uint, reqTeamRole string) (string, bool, error) {
+func (s *PermissionService) CheckTeamPermission(userID uint, teamID uint, reqTeamRole string) (string, bool, error) {
 	var teamMember model.TeamMember
 	if err := storage.DB.Where("user_id = ? AND team_id = ?", userID, teamID).First(&teamMember).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -32,7 +32,7 @@ func (s *PermissionService) CheckTeamPermisson(userID uint, teamID uint, reqTeam
 	return teamMember.Role, true, nil
 }
 
-func (s *PermissionService) CheckProjectPermisson(userID uint, projectID uint, reqProjectRole string) (string, bool, error) {
+func (s *PermissionService) CheckProjectPermission(userID uint, projectID uint, reqProjectRole string) (string, bool, error) {
 	var projectMember model.ProjectMember
 	if err := storage.DB.Where("user_id = ? AND project_id = ?", userID, projectID).First(&projectMember).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

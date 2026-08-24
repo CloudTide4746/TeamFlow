@@ -44,6 +44,7 @@ const (
 	TaskPriorityNone   TaskPriority = "none"
 )
 
+// IsValidTaskStatus 校验任务状态是否有效
 func IsValidTaskStatus(status TaskStatus) bool {
 	switch status {
 	case TaskStatusTodo, TaskStatusInProgress, TaskStatusReview, TaskStatusDone:
@@ -53,6 +54,7 @@ func IsValidTaskStatus(status TaskStatus) bool {
 	}
 }
 
+// IsValidTaskPriority 校验任务优先级是否有效
 func IsValidTaskPriority(priority TaskPriority) bool {
 	switch priority {
 	case TaskPriorityLow, TaskPriorityMedium, TaskPriorityHigh, TaskPriorityNone:
