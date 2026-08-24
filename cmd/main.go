@@ -1,9 +1,10 @@
 package main
 
 import (
-	"database/sql"
+	"flag"
 	"fmt"
 	"os"
+
 	"teamflow/config"
 	"teamflow/internal/controller"
 	"teamflow/internal/database"
@@ -18,13 +19,39 @@ import (
 	"go.uber.org/zap"
 )
 
+// testFlag 通过 `go run cmd/main.go -test` 只运行组件自检，不启动服务器
+var testFlag = flag.Bool("test", false, "运行所有组件自检后退出（不启动服务器）")
+
 func main() {
-	// 0. 加载环境变量（可选）
+	flag.Parse()
+
+	// 组件自检模式：仅验证配置 / 日志 / 数据库是否正常
+	if *testFlag {
+		TestAllComponents()
+		return
+	}
+
+	run()
+}
+
+// run 应用启动主流程：配置 → 日志 → 数据库 → 路由 → 服务器
+func run() {
+	cfg := loadConfig() // 1. 加载 .env、配置文件并初始化 JWT
+	initLogger(cfg)     // 2. 初始化日志系统
+	defer logger.Sync() //    退出前刷新日志缓冲区
+
+	initDatabase(cfg) // 3. 连接数据库并自动迁移表结构
+	initRedis(cfg)    // 4. 连接 Redis
+	runServer()       // 5. 组装依赖、注册路由并启动 HTTP 服务
+}
+
+// loadConfig 加载 .env 环境变量与 YAML 配置，并初始化 JWT
+func loadConfig() *config.Config {
+	// 加载 .env（可选：缺失时使用配置文件中的默认值）
 	if err := godotenv.Load(); err != nil {
 		fmt.Println("未找到 .env 文件，使用配置文件中的默认值")
 	}
 
-	// 1. 加载配置
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
 		configPath = "config/config.yaml"
@@ -34,47 +61,87 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintf("加载配置失败: %v", err))
 	}
+
 	if err := jwt.Configure(cfg.JWT.Secret); err != nil {
 		panic(fmt.Sprintf("初始化 JWT 失败: %v", err))
 	}
 
-	// 2. 初始化日志
+	return cfg
+}
+
+// initLogger 初始化日志系统
+func initLogger(cfg *config.Config) {
 	if err := logger.InitLogger(&cfg.Log); err != nil {
 		panic(fmt.Sprintf("初始化日志失败: %v", err))
 	}
-	defer logger.Sync()
 
 	logger.Info("应用启动",
 		zap.String("app_name", cfg.App.Name),
 		zap.String("env", cfg.App.Env),
 	)
-
 	fmt.Println("✅ 配置和日志系统初始化成功！")
+}
 
-	// 3. 初始化数据库
+// initDatabase 连接 MySQL 并自动迁移所有表结构
+func initDatabase(cfg *config.Config) {
 	storage.InitDB(cfg.Database.GetDSN())
-
 	if err := database.AutoMigrate(); err != nil {
 		panic(fmt.Sprintf("数据库迁移失败: %v", err))
 	}
-	userService := service.NewUserService()
-	userController := controller.NewUserController(userService)
-	teamService := service.NewTeamService()
-	teamController := controller.NewTeamController(teamService)
-	projectService := service.NewProjectService()
-	projectController := controller.NewProjectController(projectService)
-	taskRepo := repository.NewTaskRepository(storage.DB)
-	taskService := service.NewTaskService(taskRepo, &service.NoopNotificationService{})
-	taskController := controller.NewTaskController(taskService)
-	r := router.SetupRouter(userController, teamController, projectController, taskController)
+}
 
+// initRedis 连接 Redis
+func initRedis(cfg *config.Config) {
+	if err := database.InitRedis(cfg.Redis); err != nil {
+		panic(fmt.Sprintf("初始化 Redis 失败: %v", err))
+	}
+	logger.Info("Redis 连接成功")
+}
+
+// runServer 组装 Service/Controller，注册路由并启动 HTTP 服务器
+func runServer() {
+	// 用户 / 团队 / 项目控制器
+	userController := controller.NewUserController(service.NewUserService())
+	teamController := controller.NewTeamController(service.NewTeamService())
+	projectController := controller.NewProjectController(service.NewProjectService())
+
+	// 任务控制器（通知暂用空实现，后续可替换为 WebSocket/队列推送）
+	taskController := controller.NewTaskController(
+		service.NewTaskService(
+			repository.NewTaskRepository(storage.DB),
+			&service.NoopNotificationService{},
+		),
+	)
+
+	// 评论控制器
+	commentController := controller.NewCommentController(
+		service.NewCommentService(repository.NewCommentRepository(storage.DB)),
+	)
+
+	// 附件控制器
+	attachmentController := controller.NewAttachmentController(
+		service.NewAttachmentService(repository.NewAttachmentRepository(storage.DB)),
+	)
+
+	// 注册路由（中间件需要使用 zap Logger）
+	r := router.SetupRouter(
+		userController,
+		teamController,
+		projectController,
+		taskController,
+		commentController,
+		attachmentController,
+		logger.Logger,
+	)
+
+	// 启动 HTTP 服务（Run 阻塞，仅出错时返回）
 	if err := r.Run(":8080"); err != nil {
 		panic(fmt.Sprintf("启动服务器失败: %v", err))
 	}
-	fmt.Println("✅ 服务器启动成功，监听端口: 8080")
 }
 
 // TestAllComponents 测试所有已完成的组件
+//
 // 运行方式: go run cmd/main.go -test
 // ⚠️ 注意: 此测试函数会真正连接数据库，请确保数据库配置正确
 func TestAllComponents() {
@@ -148,13 +215,4 @@ func TestAllComponents() {
 	fmt.Printf("   ✅ Is Production: %v\n", testConfig.App.IsProduction())
 
 	fmt.Println("\n========== 所有组件测试完成 ==========")
-}
-
-// RunTests 当传入 -test 参数时运行测试
-func GetDBStatus() sql.DBStats {
-	sqlDB, err := storage.DB.DB()
-	if err != nil {
-		panic(fmt.Sprintf("获取数据库实例失败: %v", err))
-	}
-	return sqlDB.Stats()
 }

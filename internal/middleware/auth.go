@@ -1,7 +1,11 @@
 package middleware
 
 import (
+	"net/http"
+	"strconv"
 	"strings"
+	"teamflow/internal/cache"
+	"teamflow/pkg/apperr"
 	"teamflow/pkg/jwt"
 	"teamflow/pkg/response"
 
@@ -17,6 +21,15 @@ func JWTAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		blacklisted, err := cache.IsBlacklisted(token)
+		if err != nil {
+			c.Error(apperr.ErrUnauthorized)
+			return
+		}
+		if blacklisted {
+			c.Error(apperr.New(1001, "token is blacklisted", http.StatusUnauthorized))
+			return
+		}
 		// 验证token
 		parts := strings.SplitN(token, " ", 2)
 		if len(parts) != 2 || parts[0] != "Bearer" {
@@ -26,9 +39,17 @@ func JWTAuth() gin.HandlerFunc {
 		}
 		// 验证token
 		claims, err := jwt.ParseToken(parts[1])
-		if err != nil {
-			response.Unauthorized(c)
+
+		rawToken := parts[1]
+		userCache := &cache.UserCache{}
+		cachedToken, err := userCache.GetUserToken(strconv.FormatUint(uint64(claims.UserID), 10))
+		if err != nil || cachedToken != rawToken {
+			c.Error(apperr.ErrUnauthorized)
 			c.Abort()
+			return
+		}
+		if err != nil {
+			c.Error(apperr.ErrUnauthorized)
 			return
 		}
 		c.Set("userID", claims.UserID)
@@ -39,9 +60,18 @@ func JWTAuth() gin.HandlerFunc {
 }
 
 func GetCurrentUsername(c *gin.Context) (string, bool) {
-	userID, ok := c.Get("username")
+	username, ok := c.Get("username")
 	if !ok {
 		return "", false
 	}
-	return userID.(string), true
+	return username.(string), true
+}
+
+// GetCurrentUserID 获取当前登录用户的ID
+func GetCurrentUserID(c *gin.Context) (uint, bool) {
+	userID, ok := c.Get("userID")
+	if !ok {
+		return 0, false
+	}
+	return userID.(uint), true
 }

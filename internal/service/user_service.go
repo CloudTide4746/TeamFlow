@@ -3,8 +3,11 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"teamflow/internal/cache"
 	"teamflow/internal/dto"
 	"teamflow/pkg/jwt"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
@@ -33,6 +36,7 @@ type LoginResponse struct {
 	User  *model.User `json:"user"`
 }
 
+// Login 用户登录
 func (s *UserService) Login(req *request.LoginRequest) (LoginResponse, error) {
 	var user model.User
 	result := storage.DB.Where("username = ?", req.Username).First(&user)
@@ -50,6 +54,14 @@ func (s *UserService) Login(req *request.LoginRequest) (LoginResponse, error) {
 	if err != nil {
 		return LoginResponse{}, fmt.Errorf("生成token失败: %w", err)
 	}
+	userCache := &cache.UserCache{}
+	if err := userCache.SetUserToken(
+		strconv.FormatUint(uint64(user.ID), 10),
+		token,
+		1*time.Hour,
+	); err != nil {
+		return LoginResponse{}, fmt.Errorf("保存登录会话失败: %w", err)
+	}
 	//清空密码
 	user.Password = ""
 	return LoginResponse{
@@ -58,8 +70,22 @@ func (s *UserService) Login(req *request.LoginRequest) (LoginResponse, error) {
 	}, nil
 }
 
-// CreateUser 创建用户，密码由 BeforeCreate hook 自动加密
+// Logout 用户注销
+func (s *UserService) Logout(userID uint) error {
+	// 检查用户是否存在
+	var user model.User
+	if err := storage.DB.First(&user, userID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("用户不存在")
+		}
+		return fmt.Errorf("查询用户失败: %w", err)
+	}
+	// 从缓存中删除用户token
+	userCache := &cache.UserCache{}
+	return userCache.DeleteUserToken(strconv.FormatUint(uint64(userID), 10))
+}
 
+// CreateUser 创建用户，密码由 BeforeCreate hook 自动加密
 func (s *UserService) CreateUser(req *request.RegisterRequest) (*model.User, error) {
 	user := model.User{
 		Username: req.Username,
