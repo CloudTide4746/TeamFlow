@@ -21,6 +21,9 @@ func (u *UserCache) GetUser(userID uint, out interface{}) (bool, error) {
 // SetUser 设置用户缓存，ttl<=0 表示不过期
 func (u *UserCache) SetUser(userID uint, user interface{}, ttl time.Duration) error {
 	key := fmt.Sprintf("user:%d", userID)
+	if ttl > 0 {
+		return utils.SetCacheWithJitter(key, user, ttl, ttl)
+	}
 	return utils.SetCache(key, user, ttl)
 }
 

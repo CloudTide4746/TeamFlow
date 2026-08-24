@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"teamflow/internal/cache"
 	"teamflow/internal/model"
 	"teamflow/internal/repository"
 	"time"
@@ -41,6 +42,11 @@ type TaskService interface {
 type taskService struct {
 	repo     repository.TaskRepository
 	notifier NotificationService
+}
+
+type taskListCacheValue struct {
+	Tasks []*model.Task `json:"tasks"`
+	Total int64         `json:"total"`
 }
 
 func NewTaskService(repo repository.TaskRepository, notifier NotificationService) TaskService {
@@ -82,6 +88,7 @@ func (s *taskService) CreateTask(task *model.Task) error {
 	if err := s.repo.Create(task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
+	_ = cache.InvalidateTask(task.ID, task.ProjectID)
 	return nil
 }
 
@@ -112,10 +119,16 @@ func (s *taskService) GetTaskList(projectID, operatorID uint, page, size int) ([
 	if size > 100 {
 		size = 100
 	}
+	cacheKey := cache.TaskListKey(projectID, page, size)
+	var cached taskListCacheValue
+	if ok, _ := cache.GetResourceCache(cacheKey, &cached); ok {
+		return cached.Tasks, cached.Total, nil
+	}
 	tasks, total, err := s.repo.List(projectID, page, size)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list tasks: %w", err)
 	}
+	_ = cache.SetListCache(cacheKey, taskListCacheValue{Tasks: tasks, Total: total})
 	return tasks, total, nil
 }
 
@@ -172,6 +185,8 @@ func (s *taskService) DeleteTask(id, operatorID uint) error {
 	if err := s.repo.Delete(id); err != nil {
 		return fmt.Errorf("delete task: %w", err)
 	}
+	_ = cache.InvalidateTask(task.ID, task.ProjectID)
+	_ = cache.InvalidateTaskComments(task.ID)
 	return nil
 }
 
@@ -238,6 +253,11 @@ func (s *taskService) getTask(id uint) (*model.Task, error) {
 	if id == 0 {
 		return nil, fmt.Errorf("%w: id is required", ErrInvalidTask)
 	}
+	cacheKey := cache.TaskKey(id)
+	var cached model.Task
+	if ok, _ := cache.GetResourceCache(cacheKey, &cached); ok {
+		return &cached, nil
+	}
 	task, err := s.repo.GetByID(id)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrTaskNotFound
@@ -245,6 +265,7 @@ func (s *taskService) getTask(id uint) (*model.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query task: %w", err)
 	}
+	_ = cache.SetDetailCache(cacheKey, task)
 	return task, nil
 }
 
@@ -270,5 +291,6 @@ func (s *taskService) updateFields(task *model.Task, updates map[string]interfac
 	if !updated {
 		return ErrTaskConflict
 	}
+	_ = cache.InvalidateTask(task.ID, task.ProjectID)
 	return nil
 }

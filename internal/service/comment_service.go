@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"teamflow/internal/cache"
 	"teamflow/internal/model"
 	"teamflow/internal/repository"
 )
@@ -31,6 +32,11 @@ type commentService struct {
 	repo repository.CommentRepository
 }
 
+type commentListCacheValue struct {
+	Comments []*model.Comment `json:"comments"`
+	Total    int64            `json:"total"`
+}
+
 type CommentService interface {
 	Create(input CreateCommentInput) (*model.Comment, error)
 	GetByTaskID(taskID uint, page, size int) (*CommentListResult, error)
@@ -53,6 +59,7 @@ func (s *commentService) Create(input CreateCommentInput) (*model.Comment, error
 	if err := s.repo.Create(comment); err != nil {
 		return nil, err
 	}
+	_ = cache.InvalidateTaskComments(input.TaskID)
 	return comment, nil
 }
 func (s *commentService) GetByTaskID(taskID uint, page, size int) (*CommentListResult, error) {
@@ -62,16 +69,23 @@ func (s *commentService) GetByTaskID(taskID uint, page, size int) (*CommentListR
 	if size < 1 || size > 100 {
 		size = 20
 	}
+	cacheKey := cache.TaskCommentsKey(taskID, page, size)
+	var cached commentListCacheValue
+	if ok, _ := cache.GetResourceCache(cacheKey, &cached); ok {
+		return &CommentListResult{Comments: cached.Comments, Total: cached.Total, Page: page, PageSize: size}, nil
+	}
 	comments, total, err := s.repo.FindByTaskID(taskID, page, size)
 	if err != nil {
 		return nil, err
 	}
-	return &CommentListResult{
+	result := &CommentListResult{
 		Comments: comments,
 		Total:    total,
 		Page:     page,
 		PageSize: size,
-	}, nil
+	}
+	_ = cache.SetListCache(cacheKey, commentListCacheValue{Comments: comments, Total: total})
+	return result, nil
 }
 
 // Delete 删除评论（含权限校验）
@@ -85,5 +99,9 @@ func (s *commentService) Delete(commentID, operatorID uint, isAdmin bool) error 
 	if !isAdmin && comment.UserID != operatorID {
 		return ErrCommentForbidden
 	}
-	return s.repo.Delete(commentID)
+	if err := s.repo.Delete(commentID); err != nil {
+		return err
+	}
+	_ = cache.InvalidateTaskComments(comment.TaskID)
+	return nil
 }
