@@ -145,6 +145,7 @@ Thumbs.db
 /internal/controller/team.go
 /internal/dto/request/team.go
 /internal/service/team_service.go
+/.worktrees/
 /internal/controller/user.go
 /internal/dto/request/user.go
 /internal/dto/response/user.go
