@@ -1,12 +1,15 @@
 package ws
 
 import (
-	"encoding/json"
 	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
+type WebSocketMessage struct {
+	Type    string      `json:"type"`    // 消息类型
+	Payload interface{} `json:"payload"` // 消息内容
+}
 type Client struct {
 	Hub    *Hub
 	Conn   *websocket.Conn
@@ -17,17 +20,16 @@ type Client struct {
 // Hub 管理所有活跃的 WebSocket 连接
 type Hub struct {
 	// 所有已注册的客户端，key 为 userID
-	Clients map[string]*Client
-	mu      sync.RWMutex
+	Clients   map[string]*Client
+	mu        sync.RWMutex
+	OnConnected    func(userID uint) error
+	OnDisconnected func(userID uint) error
+	OnHeartbeat    func(userID uint) error
 
 	// 注册/注销/广播 channel
 	Register   chan *Client
 	Unregister chan *Client
 	Broadcast  chan []byte
-}
-
-func (h *Hub) NewHub() any {
-	panic("unimplemented")
 }
 
 func NewHub() *Hub {
@@ -47,6 +49,7 @@ func (h *Hub) Run() {
 			h.mu.Lock()
 			h.Clients[client.UserID] = client
 			h.mu.Unlock()
+			client.notifyConnected()
 
 		case client := <-h.Unregister:
 			h.mu.Lock()
@@ -55,9 +58,10 @@ func (h *Hub) Run() {
 				close(client.Send)
 			}
 			h.mu.Unlock()
+			client.notifyDisconnected()
 
 		case message := <-h.Broadcast:
-			h.mu.RLock()
+			h.mu.Lock()
 			for _, client := range h.Clients {
 				select {
 				case client.Send <- message:
@@ -68,49 +72,15 @@ func (h *Hub) Run() {
 					delete(h.Clients, client.UserID)
 				}
 			}
-			h.mu.RUnlock()
-		}
-	}
-}
-func (c *Client) ReadPump() {
-	defer func() {
-		c.Hub.Unregister <- c
-		c.Conn.Close()
-	}()
-
-	for {
-		_, message, err := c.Conn.ReadMessage()
-		if err != nil {
-			break
-		}
-		// 将收到的消息广播给所有人
-		c.Hub.Broadcast <- message
-	}
-}
-
-// WritePump 将待发送消息写入 WebSocket 连接
-func (c *Client) WritePump() {
-	defer c.Conn.Close()
-
-	for {
-		message, ok := <-c.Send
-		if !ok {
-			// Hub 关闭了 channel
-			c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-			return
-		}
-		if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			return
+			h.mu.Unlock()
 		}
 	}
 }
 
 // SendToUser 向指定用户发送消息
-func (h *Hub) SendToUser(userID string, msg interface{}) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
+// data: 要发送的消息数据（已序列化为 JSON 字符串）
+// 返回错误：如果用户未连接或发送失败
+func (h *Hub) SendToUser(userID string, data []byte) error {
 
 	h.mu.RLock()
 	client, ok := h.Clients[userID]
@@ -124,4 +94,12 @@ func (h *Hub) SendToUser(userID string, msg interface{}) error {
 		}
 	}
 	return nil
+}
+
+// IsConnected 判断用户是否存在活动的 WebSocket 连接。
+func (h *Hub) IsConnected(userID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.Clients[userID]
+	return ok
 }

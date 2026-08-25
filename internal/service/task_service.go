@@ -235,6 +235,7 @@ func (s *taskService) ChangeTaskStatus(id, operatorID uint, newStatus model.Task
 }
 
 func (s *taskService) AssignTask(id, assigneeID, operatorID uint) (*model.Task, error) {
+	//校验
 	if assigneeID == 0 {
 		return nil, fmt.Errorf("%w: assignee_id is required", ErrInvalidTask)
 	}
@@ -249,19 +250,23 @@ func (s *taskService) AssignTask(id, assigneeID, operatorID uint) (*model.Task, 
 	if !model.HasAdminPermission(operator.Role) {
 		return nil, ErrTaskForbidden
 	}
+	//校验assignee是否在项目中
 	if _, err := s.repo.GetProjectMember(task.ProjectID, assigneeID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrAssigneeNotInProject
 		}
 		return nil, fmt.Errorf("query assignee membership: %w", err)
 	}
+	//更新
 	if err := s.updateFields(task, map[string]interface{}{"assignee_id": assigneeID}); err != nil {
 		return nil, err
 	}
+
 	updated, err := s.getTask(id)
 	if err != nil {
 		return nil, err
 	}
+	//通知assignee
 	if err := s.notifier.OnTaskAssigned(updated, assigneeID); err != nil {
 		log.Printf("notify task assignment failed: %v", err)
 	}

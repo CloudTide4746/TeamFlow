@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -10,8 +11,10 @@ import (
 	"teamflow/internal/repository"
 	"teamflow/internal/router"
 	"teamflow/internal/service"
+	"teamflow/internal/ws"
 	"teamflow/pkg/jwt"
 	"teamflow/pkg/logger"
+
 	"teamflow/storage"
 
 	"github.com/joho/godotenv"
@@ -96,8 +99,15 @@ func initRedis(cfg *config.Config) {
 
 // runServer 组装 Service/Controller，注册路由并启动 HTTP 服务器
 func runServer() {
+	onlineService := service.NewOnlineService(database.RDB)
+	hub := ws.NewHub()
+	hub.OnConnected = func(userID uint) error { return onlineService.SetOnline(context.Background(), userID) }
+	hub.OnHeartbeat = func(userID uint) error { return onlineService.Heartbeat(context.Background(), userID) }
+	hub.OnDisconnected = func(userID uint) error { return onlineService.SetOffline(context.Background(), userID) }
+	go hub.Run()
+
 	// 用户 / 团队 / 项目控制器
-	userController := controller.NewUserController(service.NewUserService())
+	userController := controller.NewUserController(service.NewUserService(), onlineService)
 	teamController := controller.NewTeamController(service.NewTeamService())
 	projectController := controller.NewProjectController(service.NewProjectService())
 
@@ -105,7 +115,7 @@ func runServer() {
 	taskController := controller.NewTaskController(
 		service.NewTaskService(
 			repository.NewTaskRepository(storage.DB),
-			service.NewNotificationService(storage.DB),
+			service.NewNotificationService(storage.DB, hub),
 		),
 	)
 
@@ -119,7 +129,11 @@ func runServer() {
 		service.NewAttachmentService(repository.NewAttachmentRepository(storage.DB)),
 	)
 
+	// 在线用户控制器
+	onlineController := controller.NewOnlineController(onlineService)
+
 	// 注册路由（中间件需要使用 zap Logger）
+	// 在router.SetupRouter调用中添加onlineController参数，完成在线用户管理功能的集成
 	r := router.SetupRouter(
 		userController,
 		teamController,
@@ -128,7 +142,9 @@ func runServer() {
 		commentController,
 		attachmentController,
 		logger.Logger,
+		onlineController,
 	)
+	SetupWebSocketRoutes(r, hub)
 
 	// 启动 HTTP 服务（Run 阻塞，仅出错时返回）
 	if err := r.Run(":8080"); err != nil {

@@ -1,9 +1,12 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
 	"teamflow/internal/model"
+	"teamflow/internal/ws"
+	"teamflow/pkg/utils"
 
 	"gorm.io/gorm"
 )
@@ -13,7 +16,8 @@ type NotificationService interface {
 	OnTaskAssigned(task *model.Task, assigneeID uint) error
 }
 type notificationService struct {
-	db *gorm.DB
+	db  *gorm.DB
+	hub *ws.Hub
 }
 
 //为什么此处无需声明 直接在NotificationService接口中定义即可呢?
@@ -28,7 +32,26 @@ func (n *notificationService) OnTaskStatusChange(task *model.Task, oldStatus, ne
 }
 
 func (n *notificationService) OnTaskAssigned(task *model.Task, assigneeID uint) error {
-	log.Printf("[Notification] 任务 %d 已被分配给 %d", task.ID, assigneeID)
+	//校验assignee是否在线
+	if !n.hub.IsConnected(utils.FormatUintToString(assigneeID)) {
+		return nil
+	}
+	//对assigneeID发送通知
+	data, err := json.Marshal(ws.WebSocketMessage{
+		Type: "notification",
+		Payload: map[string]interface{}{
+			"type":    "task_assigned",
+			"title":   "任务分配通知",
+			"content": fmt.Sprintf("您已被分配了任务 %d", task.ID),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := n.hub.SendToUser(utils.FormatUintToString(assigneeID), data); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -42,8 +65,8 @@ func (n *notificationService) OnTaskAssigned(task *model.Task, assigneeID uint) 
 //
 //后续在 `wire.go` 或初始化代码中替换 `NoopNotifier` 即可，**Service 层代码无需修改**（依赖倒置原则）。
 
-func NewNotificationService(db *gorm.DB) *notificationService {
-	return &notificationService{db: db}
+func NewNotificationService(db *gorm.DB, hub *ws.Hub) *notificationService {
+	return &notificationService{db: db, hub: hub}
 }
 
 // CreateNotification 创建并持久化一条通知

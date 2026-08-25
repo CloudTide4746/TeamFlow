@@ -16,11 +16,6 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-type WsMessage struct {
-	Type    string      `json:"type"`    // 消息类型
-	Payload interface{} `json:"payload"` // 消息内容
-}
-
 func SetupWebSocketRoutes(r *gin.Engine, hub *ws.Hub) {
 	r.GET("/ws", func(c *gin.Context) {
 		ServeWs(hub, c.Writer, c.Request)
@@ -68,6 +63,7 @@ func ServeWs(hub *ws.Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 启动读写 goroutine
+	hub.Register <- client
 	go client.WritePump()
 	go client.ReadPump()
 }
