@@ -1,17 +1,20 @@
 package service
 
 import (
+	"errors"
 	"log"
 	"teamflow/internal/model"
+
+	"gorm.io/gorm"
 )
 
 type NotificationService interface {
 	OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error
 	OnTaskAssigned(task *model.Task, assigneeID uint) error
 }
-type NoopNotificationService struct{}
-
-var _ NotificationService = (*NoopNotificationService)(nil)
+type notificationService struct {
+	db *gorm.DB
+}
 
 //为什么此处无需声明 直接在NotificationService接口中定义即可呢?
 //Go 刻意去掉了 implements 关键字，让接口的实现关系变成隐式的、解耦的。好处是：
@@ -20,11 +23,11 @@ var _ NotificationService = (*NoopNotificationService)(nil)
 //这也就是注释里说的 "依赖倒置原则" —— 接口定义方和实现方完全解耦
 //所以你的困惑很正常（从 Java/C# 转过来都会有这个疑问），但这正是 Go 接口设计的精妙之处。
 
-func (n *NoopNotificationService) OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error {
+func (n *notificationService) OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error {
 	return nil
 }
 
-func (n *NoopNotificationService) OnTaskAssigned(task *model.Task, assigneeID uint) error {
+func (n *notificationService) OnTaskAssigned(task *model.Task, assigneeID uint) error {
 	log.Printf("[Notification] 任务 %d 已被分配给 %d", task.ID, assigneeID)
 	return nil
 }
@@ -38,3 +41,60 @@ func (n *NoopNotificationService) OnTaskAssigned(task *model.Task, assigneeID ui
 //| `CompositeNotifier` | 组合多个 Notifier，同时发送多种通知         |
 //
 //后续在 `wire.go` 或初始化代码中替换 `NoopNotifier` 即可，**Service 层代码无需修改**（依赖倒置原则）。
+
+func NewNotificationService(db *gorm.DB) *notificationService {
+	return &notificationService{db: db}
+}
+
+// CreateNotification 创建并持久化一条通知
+func (s *notificationService) CreateNotification(
+	userID, senderID uint,
+	notifyType model.NotificationType,
+	title, content string,
+	resourceID uint,
+) (*model.Notification, error) {
+	n := &model.Notification{
+		UserID:   userID,
+		SenderID: senderID,
+		Type:     string(notifyType),
+		Title:    title,
+		Content:  content,
+		RefID:    &resourceID,
+		RefType:  string(notifyType),
+	}
+	if err := s.db.Create(n).Error; err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// GetNotifications 分页获取指定用户的通知列表
+func (s *notificationService) GetNotifications(userID uint, page, pageSize int) ([]model.Notification, int64, error) {
+	var notifications []model.Notification
+	var total int64
+
+	query := s.db.Model(&model.Notification{}).Where("user_id = ?", userID)
+	query.Count(&total)
+
+	offset := (page - 1) * pageSize
+	err := query.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&notifications).Error
+	return notifications, total, err
+}
+
+// MarkAsRead 将指定通知标记为已读
+func (s *notificationService) MarkAsRead(notificationID, userID uint) error {
+	result := s.db.Model(&model.Notification{}).
+		Where("id = ? AND user_id = ?", notificationID, userID).
+		Update("is_read", true)
+	if result.RowsAffected == 0 {
+		return errors.New("通知不存在或无权操作")
+	}
+	return result.Error
+}
+
+// MarkAllAsRead 将用户所有通知标记为已读
+func (s *notificationService) MarkAllAsRead(userID uint) error {
+	return s.db.Model(&model.Notification{}).
+		Where("user_id = ? AND is_read = ?", userID, false).
+		Update("is_read", true).Error
+}

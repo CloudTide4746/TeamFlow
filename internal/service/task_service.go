@@ -52,9 +52,6 @@ type taskListCacheValue struct {
 }
 
 func NewTaskService(repo repository.TaskRepository, notifier NotificationService) TaskService {
-	if notifier == nil {
-		notifier = &NoopNotificationService{}
-	}
 	return &taskService{repo: repo, notifier: notifier}
 }
 

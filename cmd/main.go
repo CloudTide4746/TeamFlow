@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-
 	"teamflow/config"
 	"teamflow/internal/controller"
 	"teamflow/internal/database"
@@ -24,13 +23,11 @@ var testFlag = flag.Bool("test", false, "运行所有组件自检后退出（不
 
 func main() {
 	flag.Parse()
-
 	// 组件自检模式：仅验证配置 / 日志 / 数据库是否正常
 	if *testFlag {
 		TestAllComponents()
 		return
 	}
-
 	run()
 }
 
@@ -65,7 +62,6 @@ func loadConfig() *config.Config {
 	if err := jwt.Configure(cfg.JWT.Secret); err != nil {
 		panic(fmt.Sprintf("初始化 JWT 失败: %v", err))
 	}
-
 	return cfg
 }
 
@@ -109,7 +105,7 @@ func runServer() {
 	taskController := controller.NewTaskController(
 		service.NewTaskService(
 			repository.NewTaskRepository(storage.DB),
-			&service.NoopNotificationService{},
+			service.NewNotificationService(storage.DB),
 		),
 	)
 
