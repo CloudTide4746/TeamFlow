@@ -2,9 +2,8 @@ package ws
 
 import (
 	"fmt"
-	"time"
-
 	"teamflow/pkg/utils"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -75,13 +74,17 @@ func (c *Client) WritePump() {
 }
 
 func (c *Client) notifyConnected() {
+
 	if c.Hub.OnConnected == nil {
 		return
 	}
+
 	userID, err := utils.StringToUint(c.UserID)
+
 	if err == nil {
 		_ = c.Hub.OnConnected(userID)
 	}
+
 }
 
 func (c *Client) notifyDisconnected() {

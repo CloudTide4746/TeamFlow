@@ -8,6 +8,7 @@ import (
 	"teamflow/config"
 	"teamflow/internal/controller"
 	"teamflow/internal/database"
+	"teamflow/internal/mq"
 	"teamflow/internal/repository"
 	"teamflow/internal/router"
 	"teamflow/internal/service"
@@ -89,7 +90,7 @@ func initDatabase(cfg *config.Config) {
 	}
 }
 
-// initRedis 连接 Redis
+// initRedis 连接 Redis 并初始化在线用户管理服务
 func initRedis(cfg *config.Config) {
 	if err := database.InitRedis(cfg.Redis); err != nil {
 		panic(fmt.Sprintf("初始化 Redis 失败: %v", err))
@@ -105,6 +106,9 @@ func runServer() {
 	hub.OnHeartbeat = func(userID uint) error { return onlineService.Heartbeat(context.Background(), userID) }
 	hub.OnDisconnected = func(userID uint) error { return onlineService.SetOffline(context.Background(), userID) }
 	go hub.Run()
+
+	// RabbitMQ 连接
+	rmq := mq.NewRabbitMQ()
 
 	// 用户 / 团队 / 项目控制器
 	userController := controller.NewUserController(service.NewUserService(), onlineService)

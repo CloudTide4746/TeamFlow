@@ -20,8 +20,8 @@ type Client struct {
 // Hub 管理所有活跃的 WebSocket 连接
 type Hub struct {
 	// 所有已注册的客户端，key 为 userID
-	Clients   map[string]*Client
-	mu        sync.RWMutex
+	Clients        map[string]*Client
+	mu             sync.RWMutex
 	OnConnected    func(userID uint) error
 	OnDisconnected func(userID uint) error
 	OnHeartbeat    func(userID uint) error
