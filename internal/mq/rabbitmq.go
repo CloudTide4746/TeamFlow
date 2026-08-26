@@ -69,4 +69,7 @@ func Consume(ch *amqp091.Channel, queue string, noAck bool) <-chan amqp091.Deliv
 	return msgs
 }
 
-//
+// Ack 确认 RabbitMQ 消息
+func Ack(ch *amqp091.Channel, delivery amqp091.Delivery) {
+	delivery.Ack(false)
+}
