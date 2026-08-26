@@ -72,19 +72,6 @@ func (rmq *RabbitMQ) NewQueue(name string, channel string) amqp091.Queue {
 	return queue
 }
 
-// CloseChannel 关闭 RabbitMQ 通道
-func (rmq *RabbitMQ) CloseChannel(name string) error {
-	ch, ok := rmq.channels[name]
-	if !ok {
-		return nil
-	}
-
-	err := ch.Close()
-	delete(rmq.channels, name)
-
-	return err
-}
-
 // CloseConnection 关闭 RabbitMQ 连接
 func CloseConnection(conn *amqp091.Connection) {
 	conn.Close()
