@@ -90,15 +90,18 @@ func NewMessage(body []byte) amqp091.Publishing {
 //}
 
 // Consume 消费 RabbitMQ 消息
-// Consume 消费 RabbitMQ 消息
 func (rmq *RabbitMQ) Consume(queueName string, channelName string, noAck bool) (<-chan amqp091.Delivery, error) {
 	ch, err := rmq.GetChannel(channelName)
+
 	if err != nil {
 		return nil, err
 	}
+
 	msgs, err := ch.Consume(queueName, "", noAck, false, false, false, nil)
+
 	if err != nil {
 		return nil, err
 	}
+
 	return msgs, nil
 }

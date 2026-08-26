@@ -12,8 +12,10 @@ import (
 )
 
 type NotificationService interface {
+	PushIfOnline(notification *model.Notification) error
 	OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error
 	OnTaskAssigned(task *model.Task, assigneeID uint) error
+	CreateNotification(userID, senderID uint, notifyType model.NotificationType, title, content string, resourceID uint) (*model.Notification, error)
 }
 type notificationService struct {
 	db  *gorm.DB
@@ -26,6 +28,21 @@ type notificationService struct {
 //后续你写 EmailNotifier，也只需要把两个方法写出来，不用写任何声明，它就自动成了 NotificationService 的实现者
 //这也就是注释里说的 "依赖倒置原则" —— 接口定义方和实现方完全解耦
 //所以你的困惑很正常（从 Java/C# 转过来都会有这个疑问），但这正是 Go 接口设计的精妙之处。
+
+// PushIfOnline
+func (n *notificationService) PushIfOnline(notification *model.Notification) error {
+	if !n.hub.IsConnected(utils.FormatUintToString(notification.UserID)) {
+		return nil
+	}
+	data, err := json.Marshal(notification)
+	if err != nil {
+		return err
+	}
+	if err := n.hub.SendToUser(utils.FormatUintToString(notification.UserID), data); err != nil {
+		return err
+	}
+	return nil
+}
 
 func (n *notificationService) OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error {
 	return nil

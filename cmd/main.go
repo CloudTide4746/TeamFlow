@@ -120,7 +120,6 @@ func runServer() {
 		service.NewTaskService(
 			repository.NewTaskRepository(storage.DB),
 			service.NewNotificationService(storage.DB, hub),
-			*rmq,
 		),
 	)
 

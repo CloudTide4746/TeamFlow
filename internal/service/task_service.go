@@ -1,18 +1,20 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
 	"teamflow/internal/cache"
+	"teamflow/internal/event"
 	"teamflow/internal/model"
-	"teamflow/internal/mq"
+	"teamflow/internal/publisher"
+
 	"teamflow/internal/repository"
 	"time"
 
-	"github.com/rabbitmq/amqp091-go"
 	"gorm.io/gorm"
 )
 
@@ -39,14 +41,14 @@ type TaskService interface {
 	GetTask(id, operatorID uint) (*model.Task, error)
 	GetTaskList(projectID, operatorID uint, page, size int) ([]*model.Task, int64, error)
 	ChangeTaskStatus(id, operatorID uint, newStatus model.TaskStatus) (*model.Task, error)
-	AssignTask(id, assigneeID, operatorID uint) (*model.Task, error)
+	AssignTask(ctx context.Context, id, assigneeID, operatorID uint) (*model.Task, error)
 }
 
 type taskService struct {
-	repo     repository.TaskRepository
-	notifier NotificationService
-	mu       sync.Mutex
-	rmq      mq.RabbitMQ
+	repo      repository.TaskRepository
+	notifier  NotificationService
+	publisher publisher.Publisher
+	mu        sync.Mutex
 }
 
 type taskListCacheValue struct {
@@ -54,8 +56,8 @@ type taskListCacheValue struct {
 	Total int64         `json:"total"`
 }
 
-func NewTaskService(repo repository.TaskRepository, notifier NotificationService, rmq mq.RabbitMQ) TaskService {
-	return &taskService{repo: repo, notifier: notifier, rmq: rmq}
+func NewTaskService(repo repository.TaskRepository, notifier NotificationService, publisher publisher.Publisher) TaskService {
+	return &taskService{repo: repo, notifier: notifier, publisher: publisher}
 }
 
 func (s *taskService) CreateTask(task *model.Task) error {
@@ -278,7 +280,7 @@ func (s *taskService) AssignTaskv1(id, assigneeID, operatorID uint) (*model.Task
 }
 
 // AssignTaskv2 分配任务v2 接入RabbitMQ通知 WebSocket
-func (s *taskService) AssignTask(id, assigneeID, operatorID uint) (*model.Task, error) {
+func (s *taskService) AssignTask(ctx context.Context, id, assigneeID, operatorID uint) (*model.Task, error) {
 	//校验
 	if assigneeID == 0 {
 		return nil, fmt.Errorf("%w: assignee_id is required", ErrInvalidTask)
@@ -303,28 +305,28 @@ func (s *taskService) AssignTask(id, assigneeID, operatorID uint) (*model.Task, 
 		}
 		return nil, fmt.Errorf("query assignee membership: %w", err)
 	}
-	//使用RabbitMQ
-	channel, err := s.rmq.NewChannel("task_assignment_channel")
-	if err != nil {
-		return nil, err
-	}
-	defer channel.Close()
-	if err := channel.Publish("task_assignment", "task_assignment", false, false, amqp091.Publishing{
-		Body:    []byte(fmt.Appendf([]byte("task_assignment"), "%d", task.ID)),
-		Headers: amqp091.Table{},
-	}); err != nil {
-		return nil, err
-	}
+
 	//更新任务
 	if err := s.updateFields(task, map[string]interface{}{"assignee_id": assigneeID}); err != nil {
 		return nil, err
 	}
+	// 重新读取任务
+	updated, err := s.getTask(id)
+	if err != nil {
+		return nil, err
+	}
+
+	message := event.NewTaskAssigned(updated.ID, updated.ProjectID, operatorID, assigneeID)
+	err = s.publisher.Publish(ctx, message)
+	if err != nil {
+		return nil, err
+	}
 
 	//通知assignee
-	if err := s.notifier.OnTaskAssigned(task, assigneeID); err != nil {
+	if err := s.notifier.OnTaskAssigned(updated, assigneeID); err != nil {
 		log.Printf("notify task assignment failed: %v", err)
 	}
-	return task, nil
+	return updated, nil
 }
 
 func (s *taskService) getTask(id uint) (*model.Task, error) {
@@ -333,6 +335,7 @@ func (s *taskService) getTask(id uint) (*model.Task, error) {
 	}
 	cacheKey := cache.TaskKey(id)
 	var cached model.Task
+
 	if ok, _ := cache.GetResourceCache(cacheKey, &cached); ok {
 		return &cached, nil
 	}
