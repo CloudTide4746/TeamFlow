@@ -1,8 +1,15 @@
 package mq
 
 import (
+	"fmt"
+
 	"github.com/rabbitmq/amqp091-go"
 )
+
+type RabbitMQ struct {
+	conn     *amqp091.Connection
+	channels map[string]*amqp091.Channel
+}
 
 // initMQ 初始化 RabbitMQ 连接
 func initMQ() *amqp091.Connection {
@@ -14,16 +21,42 @@ func initMQ() *amqp091.Connection {
 	return conn
 }
 
+// NewRabbitMQ 创建 RabbitMQ 实例
+func NewRabbitMQ() *RabbitMQ {
+	conn := initMQ()
+	return &RabbitMQ{
+		conn:     conn,
+		channels: make(map[string]*amqp091.Channel),
+	}
+}
+
+// GetChannel 获取 RabbitMQ 通道
+func (rmq *RabbitMQ) GetChannel(name string) (*amqp091.Channel, error) {
+	if ch, ok := rmq.channels[name]; ok {
+		return ch, nil
+	}
+	return nil, fmt.Errorf("通道不存在: %s", name)
+}
+
 // NewChannel 创建 RabbitMQ 通道
-func NewChannel(conn *amqp091.Connection) *amqp091.Channel {
-	ch, err := conn.Channel()
+func (rmq *RabbitMQ) NewChannel(name string) (*amqp091.Channel, error) {
+	if _, ok := rmq.channels[name]; ok {
+		return nil, fmt.Errorf("通道已存在: %s", name)
+	}
+	ch, err := rmq.conn.Channel()
+	if err != nil {
+		return nil, err
+	}
+	rmq.channels[name] = ch
+	return ch, nil
+}
+
+// NewQueue 创建 RabbitMQ 队列
+func (rmq *RabbitMQ) NewQueue(name string, channel string) amqp091.Queue {
+	ch, err := rmq.NewChannel(channel)
 	if err != nil {
 		panic(err)
 	}
-	return ch
-}
-
-func NewQueue(ch *amqp091.Channel, name string) amqp091.Queue {
 	queue, err := ch.QueueDeclare(
 		name,
 		true,  // durable
@@ -32,6 +65,7 @@ func NewQueue(ch *amqp091.Channel, name string) amqp091.Queue {
 		false, // noWait
 		nil,
 	)
+
 	if err != nil {
 		panic(err)
 	}
@@ -39,8 +73,16 @@ func NewQueue(ch *amqp091.Channel, name string) amqp091.Queue {
 }
 
 // CloseChannel 关闭 RabbitMQ 通道
-func CloseChannel(ch *amqp091.Channel) {
-	ch.Close()
+func (rmq *RabbitMQ) CloseChannel(name string) error {
+	ch, ok := rmq.channels[name]
+	if !ok {
+		return nil
+	}
+
+	err := ch.Close()
+	delete(rmq.channels, name)
+
+	return err
 }
 
 // CloseConnection 关闭 RabbitMQ 连接
@@ -56,20 +98,20 @@ func NewMessage(body []byte) amqp091.Publishing {
 }
 
 // Publish 发布 RabbitMQ 消息
-func Publish(ch *amqp091.Channel, exchange, routingKey string, msg amqp091.Publishing) {
-	ch.Publish(exchange, routingKey, false, false, msg)
-}
+//func (rmq *RabbitMQ) Publish(exchange, routingKey string, msg amqp091.Publishing) {
+//	rmq.channels[channel].Publish(exchange, routingKey, false, false, msg)
+//}
 
 // Consume 消费 RabbitMQ 消息
-func Consume(ch *amqp091.Channel, queue string, noAck bool) <-chan amqp091.Delivery {
-	msgs, err := ch.Consume(queue, "", noAck, false, false, false, nil)
+// Consume 消费 RabbitMQ 消息
+func (rmq *RabbitMQ) Consume(queueName string, channelName string, noAck bool) (<-chan amqp091.Delivery, error) {
+	ch, err := rmq.GetChannel(channelName)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	return msgs
-}
-
-// Ack 确认 RabbitMQ 消息
-func Ack(ch *amqp091.Channel, delivery amqp091.Delivery) {
-	delivery.Ack(false)
+	msgs, err := ch.Consume(queueName, "", noAck, false, false, false, nil)
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
 }
