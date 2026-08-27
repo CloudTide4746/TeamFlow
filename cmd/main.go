@@ -8,10 +8,13 @@ import (
 	"teamflow/config"
 	"teamflow/internal/controller"
 	"teamflow/internal/database"
+	"teamflow/internal/event"
 	"teamflow/internal/mq"
+	"teamflow/internal/publisher"
 	"teamflow/internal/repository"
 	"teamflow/internal/router"
 	"teamflow/internal/service"
+	"teamflow/internal/worker"
 	"teamflow/internal/ws"
 	"teamflow/pkg/jwt"
 	"teamflow/pkg/logger"
@@ -100,6 +103,7 @@ func initRedis(cfg *config.Config) {
 
 // runServer 组装 Service/Controller，注册路由并启动 HTTP 服务器
 func runServer() {
+	// 在线用户管理服务(redis/websocket)
 	onlineService := service.NewOnlineService(database.RDB)
 	hub := ws.NewHub()
 	hub.OnConnected = func(userID uint) error { return onlineService.SetOnline(context.Background(), userID) }
@@ -107,8 +111,58 @@ func runServer() {
 	hub.OnDisconnected = func(userID uint) error { return onlineService.SetOffline(context.Background(), userID) }
 	go hub.Run()
 
+	// 通知服务(rabbitmq)
+	notificationService := service.NewNotificationService(storage.DB, hub)
 	// RabbitMQ 连接
 	rmq := mq.NewRabbitMQ()
+	Publishchannel, err := rmq.NewChannel("chennal1")
+	if err != nil {
+		panic(fmt.Sprintf("创建发布通道失败: %v", err))
+	}
+
+	if err := event.DelareTopology(Publishchannel); err != nil {
+		panic(fmt.Sprintf("声明拓扑失败: %v", err))
+	}
+	eventPublisher := publisher.NewPublisher(Publishchannel)
+	// 4. Consumer 专用 Channel
+	// consumerCh, err := rmq.NewChannel("notification-worker")
+	// if err != nil {
+	// 	panic(fmt.Sprintf("创建消费通道失败: %v", err))
+	// }
+
+	// false = manual ACK：Handle 成功后才确认消息
+	deliveries, err := rmq.Consume(
+		event.NotificationQueue,
+		"notification-worker",
+		false,
+	)
+
+	if err != nil {
+		panic(fmt.Sprintf("启动通知消费者失败: %v", err))
+	}
+
+	notificationWorker := worker.NewNotificationWorker(notificationService)
+
+	go func() {
+		for delivery := range deliveries {
+			if err := notificationWorker.Handle(delivery); err != nil {
+				logger.Error("处理任务分配事件失败", zap.Error(err))
+
+				// Level 2 临时写法：重新入队。
+				// Level 3 再改成有限重试 + 死信队列。
+				_ = delivery.Nack(false, true)
+				continue
+			}
+
+			if err := delivery.Ack(false); err != nil {
+				logger.Error("确认任务分配消息失败", zap.Error(err))
+			}
+		}
+
+		logger.Warn("通知消费者已停止")
+	}()
+
+	// 任务服务(gorm gin)
 
 	// 用户 / 团队 / 项目控制器
 	userController := controller.NewUserController(service.NewUserService(), onlineService)
@@ -119,7 +173,8 @@ func runServer() {
 	taskController := controller.NewTaskController(
 		service.NewTaskService(
 			repository.NewTaskRepository(storage.DB),
-			service.NewNotificationService(storage.DB, hub),
+			notificationService,
+			*eventPublisher,
 		),
 	)
 

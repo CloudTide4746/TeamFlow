@@ -12,6 +12,10 @@ type Publisher struct {
 	ch *amqp091.Channel // 此 Publisher 是这个 Channel 的唯一 owner
 }
 
+func NewPublisher(ch *amqp091.Channel) *Publisher {
+	return &Publisher{ch: ch}
+}
+
 func (p *Publisher) Publish(ctx context.Context, e event.Envelope) error {
 	//序列化body
 	body, err := json.Marshal(e)

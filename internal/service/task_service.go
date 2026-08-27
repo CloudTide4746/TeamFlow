@@ -41,7 +41,7 @@ type TaskService interface {
 	GetTask(id, operatorID uint) (*model.Task, error)
 	GetTaskList(projectID, operatorID uint, page, size int) ([]*model.Task, int64, error)
 	ChangeTaskStatus(id, operatorID uint, newStatus model.TaskStatus) (*model.Task, error)
-	AssignTask(ctx context.Context, id, assigneeID, operatorID uint) (*model.Task, error)
+	AssignTask(id uint, assigneeID uint, ctx context.Context, operatorID uint) (*model.Task, error)
 }
 
 type taskService struct {
@@ -239,16 +239,23 @@ func (s *taskService) ChangeTaskStatus(id, operatorID uint, newStatus model.Task
 	return updated, nil
 }
 
-// AssignTaskv1 分配任务
-func (s *taskService) AssignTaskv1(id, assigneeID, operatorID uint) (*model.Task, error) {
-	//校验
-	if assigneeID == 0 {
-		return nil, fmt.Errorf("%w: assignee_id is required", ErrInvalidTask)
-	}
+// AssignTaskv2 分配任务v2```go
+// 1. 完成现有业务校验
+// 2. updateFields(task, {"assignee_id": assigneeID})
+func (s *taskService) AssignTask(id uint, assigneeID uint, ctx context.Context, operatorID uint) (*model.Task, error) {
+	// 1. 校验任务是否存在
 	task, err := s.getTask(id)
 	if err != nil {
 		return nil, err
 	}
+	if _, err := s.requireProjectMember(task.ProjectID, operatorID); err != nil {
+		return nil, err
+	}
+	//2. 校验assignee是否存在
+	if _, err := s.requireProjectMember(task.ProjectID, assigneeID); err != nil {
+		return nil, err
+	}
+	//身份校验
 	operator, err := s.requireProjectMember(task.ProjectID, operatorID)
 	if err != nil {
 		return nil, err
@@ -256,75 +263,22 @@ func (s *taskService) AssignTaskv1(id, assigneeID, operatorID uint) (*model.Task
 	if !model.HasAdminPermission(operator.Role) {
 		return nil, ErrTaskForbidden
 	}
-	//校验assignee是否在项目中
-	if _, err := s.repo.GetProjectMember(task.ProjectID, assigneeID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrAssigneeNotInProject
-		}
-		return nil, fmt.Errorf("query assignee membership: %w", err)
-	}
-	//更新
+
+	// 2. 分配任务
 	if err := s.updateFields(task, map[string]interface{}{"assignee_id": assigneeID}); err != nil {
 		return nil, err
 	}
-
+	// 3. 重新读取，避免把旧 task（AssigneeID / Version 未刷新）返回或写进事件。
 	updated, err := s.getTask(id)
 	if err != nil {
 		return nil, err
 	}
-	//通知assignee
-	if err := s.notifier.OnTaskAssigned(updated, assigneeID); err != nil {
-		log.Printf("notify task assignment failed: %v", err)
-	}
-	return updated, nil
-}
-
-// AssignTaskv2 分配任务v2 接入RabbitMQ通知 WebSocket
-func (s *taskService) AssignTask(ctx context.Context, id, assigneeID, operatorID uint) (*model.Task, error) {
-	//校验
-	if assigneeID == 0 {
-		return nil, fmt.Errorf("%w: assignee_id is required", ErrInvalidTask)
-	}
-	//获取任务
-	task, err := s.getTask(id)
-	if err != nil {
-		return nil, err
-	}
-	//获取operator
-	operator, err := s.requireProjectMember(task.ProjectID, operatorID)
-	if err != nil {
-		return nil, err
-	}
-	if !model.HasAdminPermission(operator.Role) {
-		return nil, ErrTaskForbidden
-	}
-	//校验assignee是否在项目中
-	if _, err := s.repo.GetProjectMember(task.ProjectID, assigneeID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrAssigneeNotInProject
-		}
-		return nil, fmt.Errorf("query assignee membership: %w", err)
-	}
-
-	//更新任务
-	if err := s.updateFields(task, map[string]interface{}{"assignee_id": assigneeID}); err != nil {
-		return nil, err
-	}
-	// 重新读取任务
-	updated, err := s.getTask(id)
-	if err != nil {
-		return nil, err
-	}
-
-	message := event.NewTaskAssigned(updated.ID, updated.ProjectID, operatorID, assigneeID)
-	err = s.publisher.Publish(ctx, message)
-	if err != nil {
-		return nil, err
-	}
-
-	//通知assignee
-	if err := s.notifier.OnTaskAssigned(updated, assigneeID); err != nil {
-		log.Printf("notify task assignment failed: %v", err)
+	// 4. 数据库成功后才发布事件。
+	message := event.NewTaskAssigned(updated.ID, updated.ProjectID, assigneeID, operatorID)
+	if err := s.publisher.Publish(ctx, message); err != nil {
+		// Level 2 的策略：记录错误；不能回滚已经完成的任务指派。
+		// Level 4 会改成同事务写 Outbox，从根本上消除该丢失窗口。
+		log.Printf("publish task assigned event failed: %v", err)
 	}
 	return updated, nil
 }
