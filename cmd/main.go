@@ -8,10 +8,13 @@ import (
 	"teamflow/config"
 	"teamflow/internal/controller"
 	"teamflow/internal/database"
+	"teamflow/internal/event"
 	"teamflow/internal/mq"
+	"teamflow/internal/publisher"
 	"teamflow/internal/repository"
 	"teamflow/internal/router"
 	"teamflow/internal/service"
+	"teamflow/internal/worker"
 	"teamflow/internal/ws"
 	"teamflow/pkg/jwt"
 	"teamflow/pkg/logger"
@@ -19,6 +22,7 @@ import (
 	"teamflow/storage"
 
 	"github.com/joho/godotenv"
+	"github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )
 
@@ -100,6 +104,7 @@ func initRedis(cfg *config.Config) {
 
 // runServer 组装 Service/Controller，注册路由并启动 HTTP 服务器
 func runServer() {
+	// 在线用户管理服务(redis/websocket)
 	onlineService := service.NewOnlineService(database.RDB)
 	hub := ws.NewHub()
 	hub.OnConnected = func(userID uint) error { return onlineService.SetOnline(context.Background(), userID) }
@@ -107,8 +112,71 @@ func runServer() {
 	hub.OnDisconnected = func(userID uint) error { return onlineService.SetOffline(context.Background(), userID) }
 	go hub.Run()
 
+	// 通知服务(rabbitmq)
+
+	notificationService := service.NewNotificationService(storage.DB, hub)
 	// RabbitMQ 连接
+	// 创建一个ConSumerChannel 和 一个Publish Channel
+	// PublishChannel 用于发布通知事件
+	// ConsumerChannel 用于消费通知事件
+	// 通知事件队列：notification-queue
+	// 通知事件路由键：notification-routing-key
+	// 通过设置noAck:false 实现手动确认消息（worker中的Retry的几个函数）
 	rmq := mq.NewRabbitMQ()
+	Publishchannel, err := rmq.NewChannel("chennal1")
+	if err != nil {
+		panic(fmt.Sprintf("创建发布通道失败: %v", err))
+	}
+
+	if err := event.DeclareTopology(Publishchannel); err != nil {
+		panic(fmt.Sprintf("声明拓扑失败: %v", err))
+	}
+
+	eventPublisher := publisher.NewPublisher(Publishchannel)
+
+	consumerCh, err := rmq.NewChannel("notification-worker")
+	if err != nil {
+		panic(fmt.Sprintf("创建消费通道失败: %v", err))
+	}
+
+	if err := consumerCh.Qos(20, 0, false); err != nil {
+		panic(fmt.Sprintf("设置消费 QoS 失败: %v", err))
+	}
+
+	notificationWorker := worker.NewNotificationWorker(notificationService, *eventPublisher)
+	handler := event.NewEventHandler(notificationWorker.HandleEnvelope)
+	consumer := mq.NewConsumer(rmq, handler, eventPublisher)
+	queue := &amqp091.Queue{Name: event.NotificationQueue}
+	go func() {
+		if err := consumer.Consumer_Start(event.Envelope{}, "notification-worker", queue); err != nil {
+			logger.Error("通知消费者已停止", zap.Error(err))
+		}
+	}()
+
+	//开一个goroutine处理通知事件
+	// go func() {
+	// 	for delivery := range deliveries {
+	// 		if err := notificationWorker.Handle(delivery); err != nil {
+	// 			logger.Error("处理任务分配事件失败", zap.Error(err))
+
+	// 			// 有限重试：按次数投递到 5s/30s/5m 延迟队列，超过上限进停车场。
+	// 			if retryErr := notificationWorker.Retry(delivery); retryErr != nil {
+	// 				logger.Error("发布重试副本失败，重新入队该消息", zap.Error(retryErr))
+	// 				_ = delivery.Nack(false, true)
+	// 				// 重新入队
+	// 			}
+	// 			continue
+	// 		}
+
+	// 		if err := delivery.Ack(false); err != nil {
+	// 			logger.Error("确认任务分配消息失败", zap.Error(err))
+	// 		}
+	// 	}
+
+	// 	logger.Warn("通知消费者已停止")
+	// }()
+
+	// 任务服务(gorm gin)
 
 	// 用户 / 团队 / 项目控制器
 	userController := controller.NewUserController(service.NewUserService(), onlineService)
@@ -119,7 +187,8 @@ func runServer() {
 	taskController := controller.NewTaskController(
 		service.NewTaskService(
 			repository.NewTaskRepository(storage.DB),
-			service.NewNotificationService(storage.DB, hub),
+			notificationService,
+			*eventPublisher,
 		),
 	)
 

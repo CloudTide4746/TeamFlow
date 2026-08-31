@@ -160,12 +160,13 @@ func (c *TaskController) AssignTask(ctx *gin.Context) {
 	if !ok {
 		return
 	}
+	id := ctx.GetUint("userID")
 	var req dto.AssignTaskRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	task, err := c.svc.AssignTask(ctx, taskID, req.AssigneeID, ctx.GetUint("userID"))
+	task, err := c.svc.AssignTask(taskID, req.AssigneeID, ctx, id)
 	if err != nil {
 		writeTaskError(ctx, err)
 		return

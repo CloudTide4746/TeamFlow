@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"teamflow/internal/model"
 	"teamflow/internal/ws"
 	"teamflow/pkg/utils"
@@ -14,12 +13,17 @@ import (
 type NotificationService interface {
 	PushIfOnline(notification *model.Notification) error
 	OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error
-	OnTaskAssigned(task *model.Task, assigneeID uint) error
+
 	CreateNotification(userID, senderID uint, notifyType model.NotificationType, title, content string, resourceID uint) (*model.Notification, error)
 }
 type notificationService struct {
 	db  *gorm.DB
 	hub *ws.Hub
+}
+
+// OnTaskAssigned implements [NotificationService].
+func (n *notificationService) OnTaskAssigned(task *model.Task, assigneeID uint) error {
+	panic("unimplemented")
 }
 
 //为什么此处无需声明 直接在NotificationService接口中定义即可呢?
@@ -29,7 +33,7 @@ type notificationService struct {
 //这也就是注释里说的 "依赖倒置原则" —— 接口定义方和实现方完全解耦
 //所以你的困惑很正常（从 Java/C# 转过来都会有这个疑问），但这正是 Go 接口设计的精妙之处。
 
-// PushIfOnline
+// PushIfOnline 推送通知到在线用户,如果用户不在线,则返回 nil
 func (n *notificationService) PushIfOnline(notification *model.Notification) error {
 	if !n.hub.IsConnected(utils.FormatUintToString(notification.UserID)) {
 		return nil
@@ -48,29 +52,29 @@ func (n *notificationService) OnTaskStatusChange(task *model.Task, oldStatus, ne
 	return nil
 }
 
-func (n *notificationService) OnTaskAssigned(task *model.Task, assigneeID uint) error {
-	//校验assignee是否在线
-	if !n.hub.IsConnected(utils.FormatUintToString(assigneeID)) {
-		return nil
-	}
-	//对assigneeID发送通知
-	data, err := json.Marshal(ws.WebSocketMessage{
-		Type: "notification",
-		Payload: map[string]interface{}{
-			"type":    "task_assigned",
-			"title":   "任务分配通知",
-			"content": fmt.Sprintf("您已被分配了任务 %d", task.ID),
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if err := n.hub.SendToUser(utils.FormatUintToString(assigneeID), data); err != nil {
-		return err
-	}
+// func (n *notificationService) OnTaskAssigned(task *model.Task, assigneeID uint) error {
+// 	//校验assignee是否在线
+// 	if !n.hub.IsConnected(utils.FormatUintToString(assigneeID)) {
+// 		return nil
+// 	}
+// 	//对assigneeID发送通知
+// 	data, err := json.Marshal(ws.WebSocketMessage{
+// 		Type: "notification",
+// 		Payload: map[string]interface{}{
+// 			"type":    "task_assigned",
+// 			"title":   "任务分配通知",
+// 			"content": fmt.Sprintf("您已被分配了任务 %d", task.ID),
+// 		},
+// 	})
+// 	if err != nil {
+// 		return err
+// 	}
+// 	if err := n.hub.SendToUser(utils.FormatUintToString(assigneeID), data); err != nil {
+// 		return err
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 //### 后续实现思路
 //
@@ -86,7 +90,7 @@ func NewNotificationService(db *gorm.DB, hub *ws.Hub) *notificationService {
 	return &notificationService{db: db, hub: hub}
 }
 
-// CreateNotification 创建并持久化一条通知
+// CreateNotification 创建并持久化一条通知记录
 func (s *notificationService) CreateNotification(
 	userID, senderID uint,
 	notifyType model.NotificationType,

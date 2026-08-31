@@ -12,7 +12,16 @@
       "Read(//c/Program Files/Go/**)",
       "Read(//c/Users/PC/go/bin/**)",
       "Bash(go version *)",
-      "Bash(cmd //c \"dir C:\\\\\\\\go 2>nul & where go 2>nul & dir C:\\\\\\\\Users\\\\\\\\PC\\\\\\\\sdk 2>nul\")"
+      "Bash(cmd //c \"dir C:\\\\\\\\go 2>nul & where go 2>nul & dir C:\\\\\\\\Users\\\\\\\\PC\\\\\\\\sdk 2>nul\")",
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "Bash(echo \"--- EXIT: $? ---\")",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(gh pr *)",
+      "Bash(git ls-tree *)",
+      "Bash(go test *)"
     ]
   }
 }
