@@ -22,6 +22,7 @@ import (
 	"teamflow/storage"
 
 	"github.com/joho/godotenv"
+	"github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )
 
@@ -112,55 +113,68 @@ func runServer() {
 	go hub.Run()
 
 	// 通知服务(rabbitmq)
+
 	notificationService := service.NewNotificationService(storage.DB, hub)
 	// RabbitMQ 连接
+	// 创建一个ConSumerChannel 和 一个Publish Channel
+	// PublishChannel 用于发布通知事件
+	// ConsumerChannel 用于消费通知事件
+	// 通知事件队列：notification-queue
+	// 通知事件路由键：notification-routing-key
+	// 通过设置noAck:false 实现手动确认消息（worker中的Retry的几个函数）
 	rmq := mq.NewRabbitMQ()
 	Publishchannel, err := rmq.NewChannel("chennal1")
 	if err != nil {
 		panic(fmt.Sprintf("创建发布通道失败: %v", err))
 	}
 
-	if err := event.DelareTopology(Publishchannel); err != nil {
+	if err := event.DeclareTopology(Publishchannel); err != nil {
 		panic(fmt.Sprintf("声明拓扑失败: %v", err))
 	}
+
 	eventPublisher := publisher.NewPublisher(Publishchannel)
-	// 4. Consumer 专用 Channel
-	// consumerCh, err := rmq.NewChannel("notification-worker")
-	// if err != nil {
-	// 	panic(fmt.Sprintf("创建消费通道失败: %v", err))
-	// }
 
-	// false = manual ACK：Handle 成功后才确认消息
-	deliveries, err := rmq.Consume(
-		event.NotificationQueue,
-		"notification-worker",
-		false,
-	)
-
+	consumerCh, err := rmq.NewChannel("notification-worker")
 	if err != nil {
-		panic(fmt.Sprintf("启动通知消费者失败: %v", err))
+		panic(fmt.Sprintf("创建消费通道失败: %v", err))
 	}
 
-	notificationWorker := worker.NewNotificationWorker(notificationService)
+	if err := consumerCh.Qos(20, 0, false); err != nil {
+		panic(fmt.Sprintf("设置消费 QoS 失败: %v", err))
+	}
 
+	notificationWorker := worker.NewNotificationWorker(notificationService, *eventPublisher)
+	handler := event.NewEventHandler(notificationWorker.HandleEnvelope)
+	consumer := mq.NewConsumer(rmq, handler, eventPublisher)
+	queue := &amqp091.Queue{Name: event.NotificationQueue}
 	go func() {
-		for delivery := range deliveries {
-			if err := notificationWorker.Handle(delivery); err != nil {
-				logger.Error("处理任务分配事件失败", zap.Error(err))
-
-				// Level 2 临时写法：重新入队。
-				// Level 3 再改成有限重试 + 死信队列。
-				_ = delivery.Nack(false, true)
-				continue
-			}
-
-			if err := delivery.Ack(false); err != nil {
-				logger.Error("确认任务分配消息失败", zap.Error(err))
-			}
+		if err := consumer.Consumer_Start(event.Envelope{}, "notification-worker", queue); err != nil {
+			logger.Error("通知消费者已停止", zap.Error(err))
 		}
-
-		logger.Warn("通知消费者已停止")
 	}()
+
+	//开一个goroutine处理通知事件
+	// go func() {
+	// 	for delivery := range deliveries {
+	// 		if err := notificationWorker.Handle(delivery); err != nil {
+	// 			logger.Error("处理任务分配事件失败", zap.Error(err))
+
+	// 			// 有限重试：按次数投递到 5s/30s/5m 延迟队列，超过上限进停车场。
+	// 			if retryErr := notificationWorker.Retry(delivery); retryErr != nil {
+	// 				logger.Error("发布重试副本失败，重新入队该消息", zap.Error(retryErr))
+	// 				_ = delivery.Nack(false, true)
+	// 				// 重新入队
+	// 			}
+	// 			continue
+	// 		}
+
+	// 		if err := delivery.Ack(false); err != nil {
+	// 			logger.Error("确认任务分配消息失败", zap.Error(err))
+	// 		}
+	// 	}
+
+	// 	logger.Warn("通知消费者已停止")
+	// }()
 
 	// 任务服务(gorm gin)
 

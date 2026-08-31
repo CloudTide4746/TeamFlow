@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -273,9 +274,15 @@ func (s *taskService) AssignTask(id uint, assigneeID uint, ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	// 4. 数据库成功后才发布事件。
+	// 4. 数据库成功后才发布事件。Consumer 按 EventType 分发，因此消息必须保留完整封包。
 	message := event.NewTaskAssigned(updated.ID, updated.ProjectID, assigneeID, operatorID)
-	if err := s.publisher.Publish(ctx, message); err != nil {
+	body, err := json.Marshal(message)
+	if err != nil {
+		// Level 2 的策略：任务已指派，记录错误但不应让这次分配失败。
+		log.Printf("marshal task assigned event failed: %v", err)
+		return updated, nil
+	}
+	if err := s.publisher.Publish(ctx, event.EventsExchange, event.TaskAssignedRouting, body, nil); err != nil {
 		// Level 2 的策略：记录错误；不能回滚已经完成的任务指派。
 		// Level 4 会改成同事务写 Outbox，从根本上消除该丢失窗口。
 		log.Printf("publish task assigned event failed: %v", err)

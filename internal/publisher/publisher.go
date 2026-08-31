@@ -2,32 +2,91 @@ package publisher
 
 import (
 	"context"
-	"encoding/json"
-	"teamflow/internal/event"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
 
 	"github.com/rabbitmq/amqp091-go"
 )
 
 type Publisher struct {
-	ch *amqp091.Channel // 此 Publisher 是这个 Channel 的唯一 owner
+	ch          *amqp091.Channel // 此 Publisher 是这个 Channel 的唯一 owner
+	mu          *sync.Mutex
+	confirmOnce *sync.Once
+	confirmErr  error
+	confirms    <-chan amqp091.Confirmation
+	returns     <-chan amqp091.Return
 }
 
 func NewPublisher(ch *amqp091.Channel) *Publisher {
-	return &Publisher{ch: ch}
+	return &Publisher{ch: ch, mu: &sync.Mutex{}, confirmOnce: &sync.Once{}}
 }
 
-func (p *Publisher) Publish(ctx context.Context, e event.Envelope) error {
-	//序列化body
-	body, err := json.Marshal(e)
-	if err != nil {
-		return err
+// Publish 直接把原始字节消息发布到指定 exchange 的指定路由键
+// 使用原生的PublishWithContext方法，设置DeliveryMode为Persistent，实现消息持久化
+func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, body []byte, headers amqp091.Table) error {
+	if p == nil || p.ch == nil {
+		return errors.New("publisher channel is not configured")
 	}
-	return p.ch.PublishWithContext(ctx, event.EventsExchange, e.EventType, false, false, amqp091.Publishing{
+	if p.mu == nil || p.confirmOnce == nil {
+		return errors.New("publisher is not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx := ctx
+	var cancel context.CancelFunc
+	if _, ok := ctx.Deadline(); !ok {
+		waitCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.confirmOnce.Do(func() {
+		p.confirmErr = p.ch.Confirm(false)
+		if p.confirmErr == nil {
+			p.confirms = p.ch.NotifyPublish(make(chan amqp091.Confirmation, 1))
+			p.returns = p.ch.NotifyReturn(make(chan amqp091.Return, 1))
+		}
+	})
+	if p.confirmErr != nil {
+		return fmt.Errorf("enable confirm publish %s/%s: %w", exchange, routingKey, p.confirmErr)
+	}
+	if err := p.ch.PublishWithContext(ctx, exchange, routingKey, true, false, amqp091.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp091.Persistent,
-		MessageId:    e.EventID,
-		Type:         e.EventType,
-		Timestamp:    e.OccurredAt,
-		Body:         body,
-	})
+
+		Headers: headers,
+		Body:    body,
+	}); err != nil {
+		return fmt.Errorf("publish %s/%s: %w", exchange, routingKey, err)
+	}
+	select {
+	case returned := <-p.returns:
+		return fmt.Errorf("publish %s/%s returned by broker: %s", exchange, routingKey, returned.ReplyText)
+	case confirmation := <-p.confirms:
+		if !confirmation.Ack {
+			return fmt.Errorf("publish %s/%s was rejected by broker", exchange, routingKey)
+		}
+		return nil
+	case <-waitCtx.Done():
+		return fmt.Errorf("publish %s/%s confirmation: %w", exchange, routingKey, waitCtx.Err())
+	}
 }
+
+// 普通 PublishWithContext 返回 nil，主要表示客户端成功把帧写入了连接；
+// 它不等于 Broker 已经把消息接管并落到目标 Queue。连接可能在写入后立即断开，
+// Publisher 无法仅靠函数返回值判断最终结果。
+
+// 八、从当前代码逐步改造的顺序
+// 建议不要一次性重写，可以按这个顺序演进：
+// 1. 保留当前 noAck=false、Ack(false)、Nack 逻辑；
+// 2. 把 notificationWorker.Handle 改成接收 Envelope，不再接收 amqp091.Delivery；
+// 3. 抽出 EventHandler 接口；
+// 4. 建立 HandlerRegistry；
+// 5. 把 task.assigned.v1 改成第一个 Handler；
+// 6. 将 ACK、Retry、Parking 保留在 Consumer Adapter；
+// 7. 增加 task.status.changed.v1，验证新增事件不修改消费框架；
+// 8. 最后把 AssignTask 的直接 Publish 改成 Outbox；
+// 9. 再给通知事务增加 processed_messages 幂等记录。

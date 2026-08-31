@@ -1,27 +1,22 @@
 package event
 
 import (
-	"context"
+	"encoding/json"
+	"errors"
 	"time"
-
-	"github.com/rabbitmq/amqp091-go"
 )
 
 const TaskAssignedV1 = "task.assigned.v1"
 
-type publisher interface {
-	Publish(ctx context.Context, message Envelope) error
-}
-type Publisher struct {
-	ch *amqp091.Channel // 此 Publisher 是这个 Channel 的唯一 owner
-}
+var ErrPermanent = errors.New("permanent error")
 
-// Envelope 事件封包
-// 事件封包用于封装事件的元数据和事件数据
+// Envelope is the stable wire format for all events.
 type Envelope struct {
-	EventID       string
-	EventType     string
-	SchemaVersion string
-	OccurredAt    time.Time
-	Payload       interface{}
+	Payload   json.RawMessage `json:"payLoad"`
+	EventID   string          `json:"eventID"`
+	EventType string          `json:"eventType"`
+	CreatedAt time.Time       `json:"createdAt"`
+	// OccurredAt is retained for compatibility with the original event model.
+	OccurredAt    time.Time `json:"occurredAt,omitempty"`
+	SchemaVersion string    `json:"schemaVersion"`
 }

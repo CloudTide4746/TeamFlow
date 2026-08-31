@@ -2,6 +2,7 @@ package mq
 
 import (
 	"fmt"
+	"teamflow/internal/event"
 
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -10,6 +11,7 @@ type RabbitMQ struct {
 	conn     *amqp091.Connection
 	channels map[string]*amqp091.Channel
 }
+type Envelop = event.Envelope
 
 // initMQ 初始化 RabbitMQ 连接
 func initMQ() *amqp091.Connection {
@@ -90,18 +92,34 @@ func NewMessage(body []byte) amqp091.Publishing {
 //}
 
 // Consume 消费 RabbitMQ 消息
-func (rmq *RabbitMQ) Consume(queueName string, channelName string, noAck bool) (<-chan amqp091.Delivery, error) {
+func (rmq *RabbitMQ) Consume(_ Envelop, channelName string, queue *amqp091.Queue, autoAck bool) (<-chan amqp091.Delivery, error) {
+	if queue == nil || queue.Name == "" {
+		return nil, fmt.Errorf("queue is required")
+	}
 	ch, err := rmq.GetChannel(channelName)
-
 	if err != nil {
 		return nil, err
 	}
-
-	msgs, err := ch.Consume(queueName, "", noAck, false, false, false, nil)
-
+	deliveries, err := ch.Consume(
+		queue.Name,
+		"",
+		autoAck,
+		false,
+		false,
+		false,
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
+	return deliveries, nil
+}
 
-	return msgs, nil
+// SetQos 设置 RabbitMQ QoS
+func (rmq *RabbitMQ) SetQos(channelName string, prefetchCount uint16, global bool) error {
+	ch, err := rmq.GetChannel(channelName)
+	if err != nil {
+		return err
+	}
+	return ch.Qos(int(prefetchCount), 0, global)
 }

@@ -15,12 +15,12 @@ import (
 func ErrorHandler(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next() // 继续执行后续中间件
-		if len(c.Errors) > 0 {
+		if len(c.Errors) == 0 {
 			return
 		}
 		err := c.Errors.Last().Err
 
-		var apperr apperr.AppError
+		var apperr *apperr.AppError
 
 		if errors.As(err, &apperr) {
 			// 已知业务错误：返回对应 HTTP 状态码和业务码
