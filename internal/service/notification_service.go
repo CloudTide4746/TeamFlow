@@ -52,6 +52,7 @@ func (n *notificationService) PushIfOnline(notification *model.Notification) err
 func (s *notificationService) HandleTaskAssignedEvent(
 	envelope event.Envelope,
 ) error {
+	//1. 校验事件ID是否存在
 	if envelope.EventID == "" {
 		return fmt.Errorf("%w: missing event_id", event.ErrPermanent)
 	}
@@ -63,7 +64,7 @@ func (s *notificationService) HandleTaskAssignedEvent(
 
 	var notification *model.Notification
 	duplicate := false
-
+	// 2. 校验事件是否已处理，如果已经处理，DoNothing
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Clauses(clause.OnConflict{
 			DoNothing: true,
@@ -80,7 +81,7 @@ func (s *notificationService) HandleTaskAssignedEvent(
 			duplicate = true
 			return nil
 		}
-
+		// 3. 创建通知
 		notification = &model.Notification{
 			UserID:   payload.AssigneeID,
 			SenderID: payload.OperatorID,
@@ -99,7 +100,7 @@ func (s *notificationService) HandleTaskAssignedEvent(
 	if duplicate {
 		return nil
 	}
-
+	// 4. 推送通知到在线用户
 	// 事务已提交；实时推送失败仅记录，不再创建重复通知。
 	if err := s.PushIfOnline(notification); err != nil {
 		log.Printf("push notification: %v", err)

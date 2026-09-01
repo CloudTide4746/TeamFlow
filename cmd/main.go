@@ -191,6 +191,7 @@ func runServer() {
 	// 任务控制器（通知暂用空实现，后续可替换为 WebSocket/队列推送）
 	taskController := controller.NewTaskController(
 		service.NewTaskService(
+			storage.DB,
 			repository.NewTaskRepository(storage.DB),
 			notificationService,
 			*eventPublisher,

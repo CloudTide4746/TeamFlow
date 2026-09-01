@@ -37,10 +37,14 @@ func (r *taskRepository) GetByID(id uint) (*model.Task, error) {
 func (r *taskRepository) Update(task *model.Task) error {
 	return r.db.Save(task).Error
 }
+func (r *taskRepository) UpdateFields(tx *gorm.DB, id uint, version int, updates map[string]interface{}) (bool, error) {
+	return r.UpdateFieldsTx(r.db, id, version, updates)
+}
 
-func (r *taskRepository) UpdateFields(id uint, version int, updates map[string]interface{}) (bool, error) {
+// UpdateFieldsTx 更新任务字段
+func (r *taskRepository) UpdateFieldsTx(tx *gorm.DB, id uint, version int, updates map[string]interface{}) (bool, error) {
 	updates["version"] = gorm.Expr("version + 1")
-	result := r.db.Model(&model.Task{}).
+	result := tx.Model(&model.Task{}).
 		Where("id = ? AND version = ?", id, version).
 		Updates(updates)
 	if result.Error != nil {

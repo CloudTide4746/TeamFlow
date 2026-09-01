@@ -18,5 +18,6 @@ func AutoMigrate() error {
 		&model.Attachment{},
 		&model.Notification{},
 		&model.ProcessedMessage{},
+		&model.OutboxEvent{},
 	)
 }

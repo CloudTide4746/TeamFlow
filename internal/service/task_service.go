@@ -46,6 +46,7 @@ type TaskService interface {
 }
 
 type taskService struct {
+	tx        *gorm.DB
 	repo      repository.TaskRepository
 	notifier  NotificationService
 	publisher publisher.Publisher
@@ -57,8 +58,8 @@ type taskListCacheValue struct {
 	Total int64         `json:"total"`
 }
 
-func NewTaskService(repo repository.TaskRepository, notifier NotificationService, publisher publisher.Publisher) TaskService {
-	return &taskService{repo: repo, notifier: notifier, publisher: publisher}
+func NewTaskService(tx *gorm.DB, repo repository.TaskRepository, notifier NotificationService, publisher publisher.Publisher) TaskService {
+	return &taskService{tx: tx, repo: repo, notifier: notifier, publisher: publisher}
 }
 
 func (s *taskService) CreateTask(task *model.Task) error {
@@ -265,29 +266,48 @@ func (s *taskService) AssignTask(id uint, assigneeID uint, ctx context.Context, 
 		return nil, ErrTaskForbidden
 	}
 
-	// 2. 分配任务
-	if err := s.updateFields(task, map[string]interface{}{"assignee_id": assigneeID}); err != nil {
-		return nil, err
-	}
-	// 3. 重新读取，避免把旧 task（AssigneeID / Version 未刷新）返回或写进事件。
-	updated, err := s.getTask(id)
-	if err != nil {
-		return nil, err
-	}
+	// updated, err := s.getTask(id)
+	// if err != nil {
+	// 	return nil, err
+	// }
 	// 4. 数据库成功后才发布事件。Consumer 按 EventType 分发，因此消息必须保留完整封包。
-	message := event.NewTaskAssigned(updated.ID, updated.ProjectID, assigneeID, operatorID)
+	message := event.NewTaskAssigned(task.ID, task.ProjectID, assigneeID, operatorID)
 	body, err := json.Marshal(message)
 	if err != nil {
 		// Level 2 的策略：任务已指派，记录错误但不应让这次分配失败。
 		log.Printf("marshal task assigned event failed: %v", err)
-		return updated, nil
+		return task, nil
 	}
-	if err := s.publisher.Publish(ctx, event.EventsExchange, event.TaskAssignedRouting, body, nil); err != nil {
-		// Level 2 的策略：记录错误；不能回滚已经完成的任务指派。
-		// Level 4 会改成同事务写 Outbox，从根本上消除该丢失窗口。
-		log.Printf("publish task assigned event failed: %v", err)
+	now := time.Now().UTC()
+	err = s.tx.Transaction(func(tx *gorm.DB) error {
+		updated, err := s.repo.UpdateFieldsTx(
+			tx,
+			task.ID,
+			task.Version,
+			map[string]interface{}{"assignee_id": assigneeID, "assigned_at": now},
+		)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return ErrTaskConflict
+		}
+		return tx.Create(&model.OutboxEvent{
+			EventID:       message.EventID,
+			EventType:     message.EventType,
+			Exchange:      event.EventsExchange,
+			RoutingKey:    event.TaskAssignedRouting,
+			Payload:       body,
+			Status:        model.OutboxPending,
+			Attempts:      0,
+			NextAttemptAt: now,
+		}).Error
+	})
+	if err != nil {
+		return nil, err
 	}
-	return updated, nil
+
+	return task, nil
 }
 
 func (s *taskService) getTask(id uint) (*model.Task, error) {
@@ -326,7 +346,7 @@ func (s *taskService) requireProjectMember(projectID, userID uint) (*model.Proje
 }
 
 func (s *taskService) updateFields(task *model.Task, updates map[string]interface{}) error {
-	updated, err := s.repo.UpdateFields(task.ID, task.Version, updates)
+	updated, err := s.repo.UpdateFields(s.tx, task.ID, task.Version, updates)
 	if err != nil {
 		return fmt.Errorf("update task: %w", err)
 	}
