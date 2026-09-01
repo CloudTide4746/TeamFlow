@@ -306,8 +306,15 @@ func (s *taskService) AssignTask(id uint, assigneeID uint, ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
+	if err := cache.InvalidateTask(task.ID, task.ProjectID); err != nil {
+		log.Printf("invalidate task cache failed: %v", err)
+	}
 
-	return task, nil
+	updatedTask, err := s.repo.GetByID(task.ID)
+	if err != nil {
+		return nil, fmt.Errorf("query assigned task: %w", err)
+	}
+	return updatedTask, nil
 }
 
 func (s *taskService) getTask(id uint) (*model.Task, error) {
@@ -346,7 +353,7 @@ func (s *taskService) requireProjectMember(projectID, userID uint) (*model.Proje
 }
 
 func (s *taskService) updateFields(task *model.Task, updates map[string]interface{}) error {
-	updated, err := s.repo.UpdateFields(s.tx, task.ID, task.Version, updates)
+	updated, err := s.repo.UpdateFields(task.ID, task.Version, updates)
 	if err != nil {
 		return fmt.Errorf("update task: %w", err)
 	}

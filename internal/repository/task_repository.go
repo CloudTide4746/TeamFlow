@@ -11,7 +11,7 @@ type TaskRepository interface {
 	Create(task *model.Task) error
 	GetByID(id uint) (*model.Task, error)
 	Update(task *model.Task) error
-	UpdateFields(tx *gorm.DB, id uint, version int, updates map[string]interface{}) (bool, error)
+	UpdateFields(id uint, version int, updates map[string]interface{}) (bool, error)
 	// UpdateFields 更新任务字段
 
 	UpdateFieldsTx(tx *gorm.DB, id uint, version int, updates map[string]interface{}) (bool, error)

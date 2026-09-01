@@ -41,7 +41,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, bo
 		waitCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 	}
-	// 上锁，确保只有一个 Publisher 能用 Confirm 方法
+	// 上锁，确保只有一个 Publisher 能用 Confirm 方法，避免并发调用导致的错误
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.confirmOnce.Do(func() {

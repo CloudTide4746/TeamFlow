@@ -37,7 +37,8 @@ func (r *taskRepository) GetByID(id uint) (*model.Task, error) {
 func (r *taskRepository) Update(task *model.Task) error {
 	return r.db.Save(task).Error
 }
-func (r *taskRepository) UpdateFields(tx *gorm.DB, id uint, version int, updates map[string]interface{}) (bool, error) {
+
+func (r *taskRepository) UpdateFields(id uint, version int, updates map[string]interface{}) (bool, error) {
 	return r.UpdateFieldsTx(r.db, id, version, updates)
 }
 
