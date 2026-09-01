@@ -17,5 +17,6 @@ func AutoMigrate() error {
 		&model.Comment{},
 		&model.Attachment{},
 		&model.Notification{},
+		&model.ProcessedMessage{},
 	)
 }

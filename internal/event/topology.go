@@ -22,6 +22,7 @@ const (
 	ParkingRouting      = "notification.parking"
 )
 
+// DeclareTopology 声明事件拓扑结构，输入为 RabbitMQ 通道，将输入的通道绑定到事件交换机、队列、绑定键等
 func DeclareTopology(ch *amqp091.Channel) error {
 	if ch == nil {
 		return fmt.Errorf("channel is required")

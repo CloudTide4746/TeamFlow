@@ -14,7 +14,6 @@ import (
 	"teamflow/internal/repository"
 	"teamflow/internal/router"
 	"teamflow/internal/service"
-	"teamflow/internal/worker"
 	"teamflow/internal/ws"
 	"teamflow/pkg/jwt"
 	"teamflow/pkg/logger"
@@ -143,16 +142,22 @@ func runServer() {
 		panic(fmt.Sprintf("设置消费 QoS 失败: %v", err))
 	}
 
-	notificationWorker := worker.NewNotificationWorker(notificationService, *eventPublisher)
-	handler := event.NewEventHandler(notificationWorker.HandleEnvelope)
+	handler := event.NewEventHandler(notificationService.HandleTaskAssignedEvent)
+
 	consumer := mq.NewConsumer(rmq, handler, eventPublisher)
-	queue := &amqp091.Queue{Name: event.NotificationQueue}
+	queue := &amqp091.Queue{
+		Name: event.NotificationQueue,
+	}
+	// 开启消费
 	go func() {
-		if err := consumer.Consumer_Start(event.Envelope{}, "notification-worker", queue); err != nil {
+		if err := consumer.Consumer_Start(
+			event.Envelope{},
+			"notification-worker",
+			queue,
+		); err != nil {
 			logger.Error("通知消费者已停止", zap.Error(err))
 		}
 	}()
-
 	//开一个goroutine处理通知事件
 	// go func() {
 	// 	for delivery := range deliveries {

@@ -41,6 +41,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, bo
 		waitCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 	}
+	// 上锁，确保只有一个 Publisher 能用 Confirm 方法
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.confirmOnce.Do(func() {
@@ -62,6 +63,7 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, bo
 	}); err != nil {
 		return fmt.Errorf("publish %s/%s: %w", exchange, routingKey, err)
 	}
+	// 等待确认或返回消息 Confirmation
 	select {
 	case returned := <-p.returns:
 		return fmt.Errorf("publish %s/%s returned by broker: %s", exchange, routingKey, returned.ReplyText)
@@ -78,15 +80,3 @@ func (p *Publisher) Publish(ctx context.Context, exchange, routingKey string, bo
 // 普通 PublishWithContext 返回 nil，主要表示客户端成功把帧写入了连接；
 // 它不等于 Broker 已经把消息接管并落到目标 Queue。连接可能在写入后立即断开，
 // Publisher 无法仅靠函数返回值判断最终结果。
-
-// 八、从当前代码逐步改造的顺序
-// 建议不要一次性重写，可以按这个顺序演进：
-// 1. 保留当前 noAck=false、Ack(false)、Nack 逻辑；
-// 2. 把 notificationWorker.Handle 改成接收 Envelope，不再接收 amqp091.Delivery；
-// 3. 抽出 EventHandler 接口；
-// 4. 建立 HandlerRegistry；
-// 5. 把 task.assigned.v1 改成第一个 Handler；
-// 6. 将 ACK、Retry、Parking 保留在 Consumer Adapter；
-// 7. 增加 task.status.changed.v1，验证新增事件不修改消费框架；
-// 8. 最后把 AssignTask 的直接 Publish 改成 Outbox；
-// 9. 再给通知事务增加 processed_messages 幂等记录。

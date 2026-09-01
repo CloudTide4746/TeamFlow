@@ -3,27 +3,27 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
+	"teamflow/internal/event"
 	"teamflow/internal/model"
 	"teamflow/internal/ws"
 	"teamflow/pkg/utils"
+	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type NotificationService interface {
+	HandleTaskAssignedEvent(envelope event.Envelope) error
 	PushIfOnline(notification *model.Notification) error
 	OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error
-
 	CreateNotification(userID, senderID uint, notifyType model.NotificationType, title, content string, resourceID uint) (*model.Notification, error)
 }
 type notificationService struct {
 	db  *gorm.DB
 	hub *ws.Hub
-}
-
-// OnTaskAssigned implements [NotificationService].
-func (n *notificationService) OnTaskAssigned(task *model.Task, assigneeID uint) error {
-	panic("unimplemented")
 }
 
 //为什么此处无需声明 直接在NotificationService接口中定义即可呢?
@@ -48,6 +48,64 @@ func (n *notificationService) PushIfOnline(notification *model.Notification) err
 	return nil
 }
 
+// HandleTaskAssignedEvent 处理任务分配事件
+func (s *notificationService) HandleTaskAssignedEvent(
+	envelope event.Envelope,
+) error {
+	if envelope.EventID == "" {
+		return fmt.Errorf("%w: missing event_id", event.ErrPermanent)
+	}
+
+	var payload event.TaskAssignedPayload
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return fmt.Errorf("%w: decode payload: %v", event.ErrPermanent, err)
+	}
+
+	var notification *model.Notification
+	duplicate := false
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.OnConflict{
+			DoNothing: true,
+		}).Create(&model.ProcessedMessage{
+			EventID:     envelope.EventID,
+			EventType:   envelope.EventType,
+			ProcessedAt: time.Now().UTC(),
+		})
+
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			duplicate = true
+			return nil
+		}
+
+		notification = &model.Notification{
+			UserID:   payload.AssigneeID,
+			SenderID: payload.OperatorID,
+			Type:     string(model.NotifyTaskAssigned),
+			Title:    "任务分配通知",
+			Content:  fmt.Sprintf("您已被分配任务 %d", payload.TaskID),
+			RefID:    &payload.TaskID,
+			RefType:  "task",
+		}
+		return tx.Create(notification).Error
+	})
+	if err != nil {
+		return err
+	}
+
+	if duplicate {
+		return nil
+	}
+
+	// 事务已提交；实时推送失败仅记录，不再创建重复通知。
+	if err := s.PushIfOnline(notification); err != nil {
+		log.Printf("push notification: %v", err)
+	}
+	return nil
+}
 func (n *notificationService) OnTaskStatusChange(task *model.Task, oldStatus, newStatus model.TaskStatus) error {
 	return nil
 }
